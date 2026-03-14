@@ -128,16 +128,31 @@ async function confirmarEValidarPicking(pickingId: number, quantidade: number) {
     "stock.move",
     "search_read",
     [[["picking_id", "=", pickingId]]],
-    { fields: ["id", "move_line_ids"] }
+    { fields: ["id", "move_line_ids", "location_id", "location_dest_id", "product_id", "product_uom"] }
   );
 
-  // Preenche quantidade feita
   for (const move of moves) {
     if (move.move_line_ids.length > 0) {
+      // Move lines já existem — apenas atualiza quantidade
       await execute(
         "stock.move.line",
         "write",
         [move.move_line_ids, { quantity: quantidade }]
+      );
+    } else {
+      // Produto sem saldo — cria move line manualmente
+      await execute(
+        "stock.move.line",
+        "create",
+        [{
+          move_id:          move.id,
+          picking_id:       pickingId,
+          product_id:       move.product_id[0],
+          product_uom_id:   move.product_uom[0],
+          quantity:         quantidade,
+          location_id:      move.location_id[0],
+          location_dest_id: move.location_dest_id[0],
+        }]
       );
     }
   }
@@ -310,7 +325,10 @@ export async function criarProduto(dados: {
   list_price: number;
   type: string;
 }): Promise<number> {
-  return execute("product.template", "create", [dados]);
+  return execute("product.template", "create", [{
+    ...dados,
+    type: "product", // ← sempre armazenável
+  }]);
 }
 
 export async function atualizarProduto(id: number, dados: {
@@ -329,4 +347,102 @@ export async function buscarSaldosProduto(productId: number): Promise<unknown[]>
     [[["product_id", "=", productId], ["location_id.usage", "=", "internal"]]],
     { fields: ["location_id", "quantity", "reserved_quantity"] }
   );
+}
+
+export async function ajusteEstoque(
+  productId: number,
+  locationId: number,
+  quantidade: number,
+  tipo: "entrada" | "saida"
+): Promise<ResultadoMovimentacao> {
+  try {
+    // Busca quant atual
+    const quants = await execute(
+      "stock.quant",
+      "search_read",
+      [[["product_id", "=", productId], ["location_id", "=", locationId]]],
+      { fields: ["id", "quantity"], limit: 1 }
+    );
+
+    const saldoAtual = quants.length > 0 ? quants[0].quantity : 0;
+    const novoSaldo  = tipo === "entrada"
+      ? saldoAtual + quantidade
+      : saldoAtual - quantidade;
+
+    return ajusteDireto(productId, locationId, novoSaldo);
+  } catch (error: unknown) {
+    return { sucesso: false, erro: (error as Error).message };
+  }
+}
+
+export async function ajusteDireto(
+  productId: number,
+  locationId: number,
+  quantidadeNova: number
+): Promise<ResultadoMovimentacao> {
+  try {
+    // Busca ou cria o quant
+    const quants = await execute(
+      "stock.quant",
+      "search_read",
+      [[["product_id", "=", productId], ["location_id", "=", locationId]]],
+      { fields: ["id", "quantity"], limit: 1 }
+    );
+
+    if (quants.length > 0) {
+      // Atualiza quant existente via inventário
+      await execute(
+        "stock.quant",
+        "write",
+        [[quants[0].id], { inventory_quantity: quantidadeNova }]
+      );
+      await execute(
+        "stock.quant",
+        "action_apply_inventory",
+        [[quants[0].id]]
+      );
+    } else {
+      // Cria novo quant via inventário
+      const quantId = await execute(
+        "stock.quant",
+        "create",
+        [{
+          product_id:           productId,
+          location_id:          locationId,
+          inventory_quantity:   quantidadeNova,
+        }]
+      );
+      await execute(
+        "stock.quant",
+        "action_apply_inventory",
+        [[quantId]]
+      );
+    }
+
+    return { sucesso: true };
+  } catch (error: unknown) {
+    return { sucesso: false, erro: (error as Error).message };
+  }
+}
+
+export async function buscarSaldosTodos(productIds: number[]): Promise<Record<number, number>> {
+  if (productIds.length === 0) return {};
+
+  const quants = await execute(
+    "stock.quant",
+    "search_read",
+    [[
+      ["product_id", "in", productIds],
+      ["location_id.usage", "=", "internal"],
+      ["location_id", "!=", 17], // ← exclui Estoque Fiscal
+    ]],
+    { fields: ["product_id", "quantity"] }
+  );
+
+  const totais: Record<number, number> = {};
+  for (const q of quants) {
+    const pid = q.product_id[0];
+    totais[pid] = (totais[pid] ?? 0) + q.quantity;
+  }
+  return totais;
 }

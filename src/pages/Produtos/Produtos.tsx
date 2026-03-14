@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { buscarProdutos, contarProdutos, criarProduto, atualizarProduto, buscarSaldosProduto } from "../../services/odoo";
+import { buscarProdutos, contarProdutos, criarProduto, atualizarProduto, buscarSaldosProduto, ajusteEstoque, ajusteDireto, buscarSaldosTodos } from "../../services/odoo";
 import { LOCATION_LIST } from "../../constants/locations";
 import "./Produtos.css";
 
@@ -31,20 +31,25 @@ const POR_PAGINA = 50;
 const ESTOQUE_BAIXO = 5;
 
 export default function Produtos() {
-  const [produtos, setProdutos]         = useState<Produto[]>([]);
-  const [total, setTotal]               = useState(0);
-  const [pagina, setPagina]             = useState(0);
-  const [busca, setBusca]               = useState("");
-  const [carregando, setCarregando]     = useState(true);
-  const [modalAberto, setModalAberto]   = useState(false);
-  const [editando, setEditando]         = useState<Produto | null>(null);
-  const [form, setForm]                 = useState<FormData>(FORM_VAZIO);
-  const [salvando, setSalvando]         = useState(false);
-  const [saldos, setSaldos]             = useState<SaldoLocal[]>([]);
+  const [produtos, setProdutos]             = useState<Produto[]>([]);
+  const [total, setTotal]                   = useState(0);
+  const [pagina, setPagina]                 = useState(0);
+  const [busca, setBusca]                   = useState("");
+  const [carregando, setCarregando]         = useState(true);
+  const [modalAberto, setModalAberto]       = useState(false);
+  const [editando, setEditando]             = useState<Produto | null>(null);
+  const [form, setForm]                     = useState<FormData>(FORM_VAZIO);
+  const [salvando, setSalvando]             = useState(false);
+  const [saldos, setSaldos]                 = useState<SaldoLocal[]>([]);
   const [produtoDetalhe, setProdutoDetalhe] = useState<Produto | null>(null);
-  const [mensagem, setMensagem]         = useState<{ tipo: "sucesso" | "erro"; texto: string } | null>(null);
+  const [mensagem, setMensagem]             = useState<{ tipo: "sucesso" | "erro"; texto: string } | null>(null);
+  const [modalAjuste, setModalAjuste]       = useState(false);
+  const [ajusteTipo, setAjusteTipo]         = useState<"entrada" | "saida" | "direto">("entrada");
+  const [ajusteLocal, setAjusteLocal]       = useState<number>(LOCATION_LIST[0].id);
+  const [ajusteQtd, setAjusteQtd]           = useState("");
+  const [ajustando, setAjustando]           = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  const [saldosTotais, setSaldosTotais] = useState<Record<number, number>>({});
   useEffect(() => { carregar("", 0); }, []);
 
   function exibirMensagem(tipo: "sucesso" | "erro", texto: string) {
@@ -59,14 +64,20 @@ export default function Produtos() {
         buscarProdutos(termo, pag * POR_PAGINA, POR_PAGINA),
         contarProdutos(termo),
       ]);
-      setProdutos(lista as Produto[]);
+      const produtosList = lista as Produto[];
+      setProdutos(produtosList);
       setTotal(count);
+
+      // Busca saldos reais somando todos os locais
+      const ids = produtosList.map((p) => p.id);
+      const totais = await buscarSaldosTodos(ids);
+      setSaldosTotais(totais);
     } catch {
       exibirMensagem("erro", "Erro ao carregar produtos.");
     } finally {
       setCarregando(false);
     }
-  }
+  }   
 
   function handleBusca(valor: string) {
     setBusca(valor);
@@ -136,13 +147,51 @@ export default function Produtos() {
     }
   }
 
-  const produtosAlerta    = produtos.filter((p) => p.qty_available > 0 && p.qty_available <= ESTOQUE_BAIXO);
-  const produtosNegativos = produtos.filter((p) => p.qty_available < 0);
+  async function confirmarAjuste() {
+    if (!produtoDetalhe) return;
+    if (!ajusteQtd || parseFloat(ajusteQtd) <= 0) {
+      exibirMensagem("erro", "Informe uma quantidade válida.");
+      return;
+    }
+
+    setAjustando(true);
+    try {
+      const qtd = parseFloat(ajusteQtd);
+      let resultado;
+
+      if (ajusteTipo === "direto") {
+        resultado = await ajusteDireto(produtoDetalhe.id, ajusteLocal, qtd);
+      } else {
+        resultado = await ajusteEstoque(produtoDetalhe.id, ajusteLocal, qtd, ajusteTipo);
+      }
+
+      if (resultado.sucesso) {
+        exibirMensagem("sucesso", "✅ Estoque ajustado com sucesso!");
+        setModalAjuste(false);
+        setAjusteQtd("");
+        const s = await buscarSaldosProduto(produtoDetalhe.id);
+        setSaldos(s as SaldoLocal[]);
+        carregar(busca, pagina);
+      } else {
+        exibirMensagem("erro", resultado.erro ?? "Erro ao ajustar estoque.");
+      }
+    } catch {
+      exibirMensagem("erro", "Erro ao ajustar estoque.");
+    } finally {
+      setAjustando(false);
+    }
+  }
+
+  const produtosAlerta    = produtos.filter((p) => {
+    const s = saldosTotais[p.id] ?? 0;
+    return s > 0 && s <= ESTOQUE_BAIXO;
+  });
+
+const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
 
   return (
     <div className="produtos-container">
 
-      {/* Mensagem */}
       {mensagem && (
         <div className={`mensagem mensagem-${mensagem.tipo}`}>{mensagem.texto}</div>
       )}
@@ -204,8 +253,8 @@ export default function Produtos() {
                 <tr
                   key={p.id}
                   className={
-                    p.qty_available < 0 ? "row-negativo" :
-                    p.qty_available <= ESTOQUE_BAIXO && p.qty_available >= 0 ? "row-alerta" : ""
+                    (saldosTotais[p.id] ?? 0) < 0 ? "row-negativo" :
+                    (saldosTotais[p.id] ?? 0) <= ESTOQUE_BAIXO ? "row-alerta" : ""
                   }
                   onClick={() => abrirDetalhe(p)}
                 >
@@ -219,8 +268,8 @@ export default function Produtos() {
                   <td className="col-sku">{p.default_code || "—"}</td>
                   <td className="col-barcode">{p.barcode || "—"}</td>
                   <td className="col-preco">R$ {p.list_price.toFixed(2)}</td>
-                  <td className={`col-saldo ${p.qty_available < 0 ? "negativo" : ""}`}>
-                    {p.qty_available}
+                  <td className={`col-saldo ${(saldosTotais[p.id] ?? 0) < 0 ? "negativo" : ""}`}>
+                    {saldosTotais[p.id] ?? 0}
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <button className="btn-editar" onClick={() => abrirEditar(p)}>✏️ Editar</button>
@@ -247,7 +296,6 @@ export default function Produtos() {
               <h3>{editando ? "Editar Produto" : "Novo Produto"}</h3>
               <button className="modal-fechar" onClick={() => setModalAberto(false)}>✕</button>
             </div>
-
             <div className="modal-form-body">
               <div className="campo">
                 <label>Nome *</label>
@@ -291,7 +339,6 @@ export default function Produtos() {
                 />
               </div>
             </div>
-
             <div className="modal-form-footer">
               <button className="btn-cancelar" onClick={() => setModalAberto(false)}>Cancelar</button>
               <button className="btn-salvar" onClick={salvar} disabled={salvando}>
@@ -302,8 +349,8 @@ export default function Produtos() {
         </div>
       )}
 
-      {/* Painel de detalhe de saldos */}
-      {produtoDetalhe && (
+      {/* Modal de detalhe */}
+      {produtoDetalhe && !modalAjuste && (
         <div className="modal-overlay" onClick={() => setProdutoDetalhe(null)}>
           <div className="modal-detalhe" onClick={(e) => e.stopPropagation()}>
             <div className="modal-form-header">
@@ -337,15 +384,104 @@ export default function Produtos() {
                 ))
               )}
             </div>
-            <button
-              className="btn-editar-detalhe"
-              onClick={() => { setProdutoDetalhe(null); abrirEditar(produtoDetalhe); }}
-            >
-              ✏️ Editar Produto
-            </button>
+            <div className="detalhe-botoes">
+              <button
+                className="btn-ajustar"
+                onClick={() => {
+                  setAjusteLocal(LOCATION_LIST[0].id);
+                  setAjusteQtd("");
+                  setAjusteTipo("entrada");
+                  setModalAjuste(true);
+                }}
+              >
+                ⚙️ Ajustar Estoque
+              </button>
+              <button
+                className="btn-editar-detalhe"
+                onClick={() => { setProdutoDetalhe(null); abrirEditar(produtoDetalhe); }}
+              >
+                ✏️ Editar Produto
+              </button>
+            </div>
           </div>
         </div>
       )}
+
+      {/* Modal de ajuste */}
+      {modalAjuste && produtoDetalhe && (
+        <div className="modal-overlay" style={{ zIndex: 600 }} onClick={() => setModalAjuste(false)}>
+          <div className="modal-form" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-form-header">
+              <h3>⚙️ Ajustar Estoque</h3>
+              <button className="modal-fechar" onClick={() => setModalAjuste(false)}>✕</button>
+            </div>
+            <div className="modal-form-body">
+              <div className="campo">
+                <label>Produto</label>
+                <div className="campo-readonly">{produtoDetalhe.name}</div>
+              </div>
+              <div className="campo">
+                <label>Localização</label>
+                <select
+                  value={ajusteLocal}
+                  onChange={(e) => setAjusteLocal(Number(e.target.value))}
+                  className="campo-select"
+                >
+                  {LOCATION_LIST.map((l) => (
+                    <option key={l.id} value={l.id}>{l.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="campo">
+                <label>Tipo de Ajuste</label>
+                <div className="tipo-ajuste-grupo">
+                  {[
+                    { valor: "entrada", label: "📥 Entrada avulsa" },
+                    { valor: "saida",   label: "📤 Saída avulsa" },
+                    { valor: "direto",  label: "🎯 Ajuste direto" },
+                  ].map((op) => (
+                    <button
+                      key={op.valor}
+                      className={`tipo-ajuste-btn ${ajusteTipo === op.valor ? "ativo" : ""}`}
+                      onClick={() => setAjusteTipo(op.valor as "entrada" | "saida" | "direto")}
+                    >
+                      {op.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="campo">
+                <label>
+                  {ajusteTipo === "direto" ? "Quantidade final desejada" :
+                   ajusteTipo === "entrada" ? "Quantidade a adicionar" :
+                   "Quantidade a remover"}
+                </label>
+                <input
+                  type="number"
+                  value={ajusteQtd}
+                  onChange={(e) => setAjusteQtd(e.target.value)}
+                  placeholder="0"
+                  min="0"
+                  step="1"
+                  autoFocus
+                />
+                {saldos.find(s => s.location_id[0] === ajusteLocal) && (
+                  <span className="saldo-atual-hint">
+                    Saldo atual: {saldos.find(s => s.location_id[0] === ajusteLocal)?.quantity ?? 0} un
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="modal-form-footer">
+              <button className="btn-cancelar" onClick={() => setModalAjuste(false)}>Cancelar</button>
+              <button className="btn-salvar" onClick={confirmarAjuste} disabled={ajustando}>
+                {ajustando ? "Ajustando..." : "✅ Confirmar Ajuste"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
