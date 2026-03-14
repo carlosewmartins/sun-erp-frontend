@@ -274,3 +274,59 @@ export async function transferirEntreGalpoes(
     return { sucesso: false, erro: (error as Error).message };
   }
 }
+
+export async function buscarProdutos(termo: string, offset = 0, limit = 50): Promise<unknown[]> {
+  const domain = termo
+    ? ["|", "|",
+        ["name",         "ilike", termo],
+        ["barcode",      "=",     termo],
+        ["default_code", "ilike", termo],
+      ]
+    : [];
+
+  return execute("product.product", "search_read", [domain], {
+    fields: ["id", "name", "barcode", "default_code", "list_price", "qty_available", "uom_id", "active"],
+    limit,
+    offset,
+    order: "name asc",
+  });
+}
+
+export async function contarProdutos(termo: string): Promise<number> {
+  const domain = termo
+    ? ["|", "|",
+        ["name",         "ilike", termo],
+        ["barcode",      "=",     termo],
+        ["default_code", "ilike", termo],
+      ]
+    : [];
+  return execute("product.product", "search_count", [domain]);
+}
+
+export async function criarProduto(dados: {
+  name: string;
+  barcode?: string;
+  default_code?: string;
+  list_price: number;
+  type: string;
+}): Promise<number> {
+  return execute("product.template", "create", [dados]);
+}
+
+export async function atualizarProduto(id: number, dados: {
+  name?: string;
+  barcode?: string;
+  default_code?: string;
+  list_price?: number;
+}): Promise<boolean> {
+  return execute("product.template", "write", [[id], dados]);
+}
+
+export async function buscarSaldosProduto(productId: number): Promise<unknown[]> {
+  return execute(
+    "stock.quant",
+    "search_read",
+    [[["product_id", "=", productId], ["location_id.usage", "=", "internal"]]],
+    { fields: ["location_id", "quantity", "reserved_quantity"] }
+  );
+}
