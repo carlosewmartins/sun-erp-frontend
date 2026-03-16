@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { buscarProdutos, contarProdutos, criarProduto, atualizarProduto, buscarSaldosProduto, ajusteEstoque, ajusteDireto, buscarSaldosTodos } from "../../services/odoo";
+import ModalVariantes from "../../components/ui/ModalVariantes";
 import { LOCATION_LIST } from "../../constants/locations";
 import "./Produtos.css";
 
@@ -48,8 +49,10 @@ export default function Produtos() {
   const [ajusteLocal, setAjusteLocal]       = useState<number>(LOCATION_LIST[0].id);
   const [ajusteQtd, setAjusteQtd]           = useState("");
   const [ajustando, setAjustando]           = useState(false);
+  const [saldosTotais, setSaldosTotais]     = useState<Record<number, number>>({});
+  const [modalVariantes, setModalVariantes] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [saldosTotais, setSaldosTotais] = useState<Record<number, number>>({});
+
   useEffect(() => { carregar("", 0); }, []);
 
   function exibirMensagem(tipo: "sucesso" | "erro", texto: string) {
@@ -67,8 +70,6 @@ export default function Produtos() {
       const produtosList = lista as Produto[];
       setProdutos(produtosList);
       setTotal(count);
-
-      // Busca saldos reais somando todos os locais
       const ids = produtosList.map((p) => p.id);
       const totais = await buscarSaldosTodos(ids);
       setSaldosTotais(totais);
@@ -77,7 +78,7 @@ export default function Produtos() {
     } finally {
       setCarregando(false);
     }
-  }   
+  }
 
   function handleBusca(valor: string) {
     setBusca(valor);
@@ -119,7 +120,6 @@ export default function Produtos() {
       exibirMensagem("erro", "Nome do produto é obrigatório.");
       return;
     }
-
     setSalvando(true);
     try {
       const dados = {
@@ -127,9 +127,8 @@ export default function Produtos() {
         barcode:      form.barcode.trim() || undefined,
         default_code: form.default_code.trim() || undefined,
         list_price:   parseFloat(form.list_price) || 0,
-        type:         "consu",
+        type:         "product",
       };
-
       if (editando) {
         await atualizarProduto(editando.id, dados);
         exibirMensagem("sucesso", "Produto atualizado com sucesso!");
@@ -137,7 +136,6 @@ export default function Produtos() {
         await criarProduto(dados);
         exibirMensagem("sucesso", "Produto criado com sucesso!");
       }
-
       setModalAberto(false);
       carregar(busca, pagina);
     } catch {
@@ -153,18 +151,15 @@ export default function Produtos() {
       exibirMensagem("erro", "Informe uma quantidade válida.");
       return;
     }
-
     setAjustando(true);
     try {
       const qtd = parseFloat(ajusteQtd);
       let resultado;
-
       if (ajusteTipo === "direto") {
         resultado = await ajusteDireto(produtoDetalhe.id, ajusteLocal, qtd);
       } else {
         resultado = await ajusteEstoque(produtoDetalhe.id, ajusteLocal, qtd, ajusteTipo);
       }
-
       if (resultado.sucesso) {
         exibirMensagem("sucesso", "✅ Estoque ajustado com sucesso!");
         setModalAjuste(false);
@@ -186,8 +181,7 @@ export default function Produtos() {
     const s = saldosTotais[p.id] ?? 0;
     return s > 0 && s <= ESTOQUE_BAIXO;
   });
-
-const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
+  const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
 
   return (
     <div className="produtos-container">
@@ -260,8 +254,8 @@ const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
                 >
                   <td className="col-nome">
                     {p.name}
-                    {p.qty_available < 0 && <span className="badge badge-negativo">Negativo</span>}
-                    {p.qty_available >= 0 && p.qty_available <= ESTOQUE_BAIXO && (
+                    {(saldosTotais[p.id] ?? 0) < 0 && <span className="badge badge-negativo">Negativo</span>}
+                    {(saldosTotais[p.id] ?? 0) >= 0 && (saldosTotais[p.id] ?? 0) <= ESTOQUE_BAIXO && (
                       <span className="badge badge-baixo">Baixo</span>
                     )}
                   </td>
@@ -350,7 +344,7 @@ const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
       )}
 
       {/* Modal de detalhe */}
-      {produtoDetalhe && !modalAjuste && (
+      {produtoDetalhe && !modalAjuste && !modalVariantes && (
         <div className="modal-overlay" onClick={() => setProdutoDetalhe(null)}>
           <div className="modal-detalhe" onClick={(e) => e.stopPropagation()}>
             <div className="modal-form-header">
@@ -395,6 +389,12 @@ const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
                 }}
               >
                 ⚙️ Ajustar Estoque
+              </button>
+              <button
+                className="btn-variantes"
+                onClick={() => setModalVariantes(true)}
+              >
+                🎨 Variantes
               </button>
               <button
                 className="btn-editar-detalhe"
@@ -480,6 +480,19 @@ const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal de variantes */}
+      {modalVariantes && produtoDetalhe && (
+        <ModalVariantes
+          templateId={produtoDetalhe.id}
+          templateNome={produtoDetalhe.name}
+          precoBase={produtoDetalhe.list_price}
+          onFechar={() => {
+            setModalVariantes(false);
+            carregar(busca, pagina);
+          }}
+        />
       )}
 
     </div>

@@ -408,3 +408,17 @@
   color: #64748b;
   margin-top: 4px;
 }
+
+.btn-variantes {
+  width: 100%;
+  padding: 12px;
+  background: #f0f7ff;
+  color: #4f8ef7;
+  border: 2px solid #4f8ef7;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-variantes:hover { background: #4f8ef7; color: white; }

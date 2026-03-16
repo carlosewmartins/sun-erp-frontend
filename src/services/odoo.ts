@@ -520,3 +520,146 @@ export async function criarEBuscarProduto(dados: {
   }
   return null;
 }
+
+// ─── Variantes ───────────────────────────────────────────────────────────────
+
+export interface Atributo {
+  id: number;
+  name: string;
+  values: AtributoValor[];
+}
+
+export interface AtributoValor {
+  id: number;
+  name: string;
+  attribute_id: [number, string];
+}
+
+export interface Variante {
+  id: number;
+  name: string;
+  default_code: string | false;
+  barcode: string | false;
+  list_price: number;
+  qty_available: number;
+  product_template_attribute_value_ids: number[];
+  combination_indices: string;
+}
+
+// Busca atributos globais cadastrados no Odoo
+export async function buscarAtributos(): Promise<Atributo[]> {
+  const attrs = await execute(
+    "product.attribute", "search_read", [[]],
+    { fields: ["id", "name", "value_ids"] }
+  );
+
+  const resultado: Atributo[] = [];
+  for (const attr of attrs) {
+    const values = await execute(
+      "product.attribute.value", "search_read",
+      [[["attribute_id", "=", attr.id]]],
+      { fields: ["id", "name", "attribute_id"] }
+    );
+    resultado.push({ id: attr.id, name: attr.name, values });
+  }
+  return resultado;
+}
+
+// Busca atributos de um produto específico
+export async function buscarAtributosProduto(templateId: number): Promise<unknown[]> {
+  return execute(
+    "product.template.attribute.line", "search_read",
+    [[["product_tmpl_id", "=", templateId]]],
+    { fields: ["id", "attribute_id", "value_ids", "product_template_value_ids"] }
+  );
+}
+
+// Adiciona um atributo ao produto (cria a linha de atributo)
+export async function adicionarAtributoProduto(
+  templateId: number,
+  attributeId: number,
+  valueIds: number[]
+): Promise<number> {
+  return execute(
+    "product.template.attribute.line", "create",
+    [{
+      product_tmpl_id: templateId,
+      attribute_id:    attributeId,
+      value_ids:       [[6, 0, valueIds]],
+    }]
+  );
+}
+
+// Remove um atributo do produto
+export async function removerAtributoProduto(lineId: number): Promise<boolean> {
+  return execute(
+    "product.template.attribute.line", "unlink", [[lineId]]
+  );
+}
+
+// Cria um novo atributo global
+export async function criarAtributo(nome: string): Promise<number> {
+  return execute("product.attribute", "create", [{ name: nome }]);
+}
+
+// Cria um valor para um atributo
+export async function criarValorAtributo(
+  attributeId: number,
+  nome: string
+): Promise<number> {
+  return execute(
+    "product.attribute.value", "create",
+    [{ attribute_id: attributeId, name: nome }]
+  );
+}
+
+// Busca variantes de um produto
+export async function buscarVariantesProduto(templateId: number): Promise<unknown[]> {
+  return execute(
+    "product.product", "search_read",
+    [[["product_tmpl_id", "=", templateId], ["active", "=", true]]],
+    {
+      fields: [
+        "id", "name", "default_code", "barcode",
+        "list_price", "qty_available",
+        "product_template_attribute_value_ids"
+      ]
+    }
+  );
+}
+
+// Atualiza dados de uma variante
+export async function atualizarVariante(
+  varianteId: number,
+  dados: { default_code?: string; barcode?: string; list_price?: number }
+): Promise<boolean> {
+  return execute("product.product", "write", [[varianteId], dados]);
+}
+
+// Cria uma variante manualmente
+export async function criarVariante(
+  templateId: number,
+  atributoValueIds: number[], // IDs dos product.template.attribute.value
+  dados: { default_code?: string; barcode?: string; list_price?: number }
+): Promise<number> {
+  // No Odoo, variantes são criadas via product.template.attribute.value
+  // Precisamos primeiro criar a combinação via API
+  const varianteId = await execute(
+    "product.product", "create",
+    [{
+      product_tmpl_id: templateId,
+      combination_indices: atributoValueIds.join(","),
+      ...dados,
+    }]
+  );
+  return varianteId;
+}
+
+// Busca os template attribute values de um produto
+export async function buscarTemplateAttrValues(templateId: number): Promise<unknown[]> {
+  return execute(
+    "product.template.attribute.value", "search_read",
+    [[["product_tmpl_id", "=", templateId]]],
+    { fields: ["id", "name", "attribute_id", "product_attribute_value_id", "ptav_active"] }
+  );
+}
