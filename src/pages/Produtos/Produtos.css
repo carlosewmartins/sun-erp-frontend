@@ -324,20 +324,6 @@
   border-radius: 8px;
 }
 
-.btn-editar-detalhe {
-  margin: 8px 24px 16px;
-  width: calc(100% - 48px);
-  padding: 12px;
-  background: #4f8ef7;
-  color: white;
-  border: none;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-editar-detalhe:hover { background: #3b7de8; }
-
 .detalhe-botoes {
   display: flex;
   flex-direction: column;

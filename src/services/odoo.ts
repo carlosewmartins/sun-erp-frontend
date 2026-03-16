@@ -446,3 +446,77 @@ export async function buscarSaldosTodos(productIds: number[]): Promise<Record<nu
   }
   return totais;
 }
+
+export async function entradaManual(
+  productId: number,
+  quantidade: number,
+): Promise<ResultadoMovimentacao> {
+  try {
+    const pickingId = await criarPicking(
+      PICKING_TYPES.ENTRADA,
+      LOCATIONS.FORNECEDOR.id,
+      LOCATIONS.WH_ESTOQUE.id,
+      productId, quantidade,
+      "Entrada manual → WH/Estoque"
+    );
+    await confirmarEValidarPicking(pickingId, quantidade);
+    return { sucesso: true, picking_id: pickingId };
+  } catch (error: unknown) {
+    return { sucesso: false, erro: (error as Error).message };
+  }
+}
+
+export async function entradaComNFe(
+  productId: number,
+  quantidade: number,
+): Promise<ResultadoMovimentacao> {
+  try {
+    const pickingReal = await criarPicking(
+      PICKING_TYPES.ENTRADA, LOCATIONS.FORNECEDOR.id,
+      LOCATIONS.WH_ESTOQUE.id, productId, quantidade, "Entrada NF-e → WH/Estoque"
+    );
+    await confirmarEValidarPicking(pickingReal, quantidade);
+    const pickingFiscal = await criarPicking(
+      PICKING_TYPES.ENTRADA, LOCATIONS.FORNECEDOR.id,
+      LOCATIONS.FISCAL.id, productId, quantidade, "Entrada NF-e → Fiscal"
+    );
+    await confirmarEValidarPicking(pickingFiscal, quantidade);
+    return { sucesso: true, picking_id: pickingReal };
+  } catch (error: unknown) {
+    return { sucesso: false, erro: (error as Error).message };
+  }
+}
+
+export async function entradaApenasNFe(
+  productId: number,
+  quantidade: number,
+): Promise<ResultadoMovimentacao> {
+  try {
+    const pickingFiscal = await criarPicking(
+      PICKING_TYPES.ENTRADA, LOCATIONS.FORNECEDOR.id,
+      LOCATIONS.FISCAL.id, productId, quantidade, "Entrada NF-e → apenas Fiscal"
+    );
+    await confirmarEValidarPicking(pickingFiscal, quantidade);
+    return { sucesso: true, picking_id: pickingFiscal };
+  } catch (error: unknown) {
+    return { sucesso: false, erro: (error as Error).message };
+  }
+}
+
+export async function criarEBuscarProduto(dados: {
+  name: string;
+  barcode?: string;
+  default_code?: string;
+  list_price: number;
+}): Promise<Produto | null> {
+  await execute("product.template", "create", [{
+    ...dados,
+    type: "product",
+  }]);
+
+  // Busca o product.product recém criado pelo barcode
+  if (dados.barcode) {
+    return buscarPorBarcode(dados.barcode);
+  }
+  return null;
+}
