@@ -2,18 +2,24 @@ import { useState, useRef, useEffect } from "react";
 import { buscarPorBarcode, registrarVenda } from "../../services/odoo";
 import { Produto, ItemVenda, TipoVenda } from "../../types";
 import ModalProdutos from "../../components/ui/ModalProdutos";
+import ModalDesconto from "../../components/ui/ModalDesconto";
 import { emitirNFCe, FormaPagamento, buscarDanfeHtml } from "../../services/fiscal";
+import { usePDVShortcuts } from "../../hooks/usePDVShortcuts";
 import "./PDV.css";
 
 export default function PDV() {
   const [tipoVenda, setTipoVenda]             = useState<TipoVenda>("recibo");
   const [carrinho, setCarrinho]               = useState<ItemVenda[]>([]);
+  const [desconto, setDesconto]               = useState(0);
+  const [ultimoDesconto, setUltimoDesconto] = useState(0);
   const [barcodeBuffer, setBarcodeBuffer]     = useState("");
   const [buscando, setBuscando]               = useState(false);
   const [finalizando, setFinalizando]         = useState(false);
-  const [mensagem, setMensagem]               = useState<{ tipo: "sucesso" | "erro"; texto: string } | null>(null);
+  const [mensagem, setMensagem]               = useState<{ tipo: "sucesso" | "erro" | "aviso"; texto: string } | null>(null);
   const [modalAberto, setModalAberto]         = useState(false);
   const [modalPagamento, setModalPagamento]   = useState(false);
+  const [modalCliente, setModalCliente]       = useState(false);
+  const [modalDesconto, setModalDesconto]     = useState(false);
   const [formaPagamento, setFormaPagamento]   = useState<FormaPagamento>("dinheiro");
   const [cpfCnpj, setCpfCnpj]               = useState("");
   const [emitindoNFCe, setEmitindoNFCe]     = useState(false);
@@ -22,6 +28,33 @@ export default function PDV() {
   const [carregandoDanfe, setCarregandoDanfe] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const algumModalAberto =
+    modalAberto    ||
+    modalPagamento ||
+    modalCliente   ||
+    modalDesconto  ||
+    !!resultadoNFCe;
+
+  function abrirModalPagamento(formaInicial: FormaPagamento = "dinheiro") {
+    if (carrinho.length === 0) {
+      exibirMensagem("erro", "Carrinho vazio.");
+      return;
+    }
+    setFormaPagamento(formaInicial);
+    setModalPagamento(true);
+  }
+
+  usePDVShortcuts(
+    {
+      onF1:  () => setModalAberto(true),
+      onF2:  () => setTipoVenda(t => t === "recibo" ? "nfce" : "recibo"),
+      onF3:  () => setModalDesconto(true),
+      onF4:  finalizarVenda,
+      onAlt: () => abrirModalPagamento("debito"),
+    },
+    algumModalAberto,
+  );
+
   useEffect(() => {
     const refocus = () => inputRef.current?.focus();
     document.addEventListener("click", refocus);
@@ -29,21 +62,19 @@ export default function PDV() {
     return () => document.removeEventListener("click", refocus);
   }, []);
 
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "F1") { e.preventDefault(); setModalAberto(true); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, []);
-
   function selecionarProdutoModal(produto: Produto) {
     adicionarAoCarrinho(produto);
   }
 
-  function exibirMensagem(tipo: "sucesso" | "erro", texto: string) {
+  function exibirMensagem(tipo: "sucesso" | "erro" | "aviso", texto: string) {
     setMensagem({ tipo, texto });
     setTimeout(() => setMensagem(null), 3000);
+  }
+
+  // ── helper: zera desconto e avisa o operador ──────────────────────────────
+  function limparDesconto() {
+    setDesconto(0);
+    exibirMensagem("aviso", "⚠️ Desconto removido. Reaplicar com F3.");
   }
 
   async function processarBarcode(barcode: string) {
@@ -65,10 +96,24 @@ export default function PDV() {
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if ((e.key === "b" || e.key === "B") && barcodeBuffer === "") {
+      e.preventDefault();
+      setModalCliente(true);
+      return;
+    }
     if (e.key === "Enter") processarBarcode(barcodeBuffer.trim());
   }
 
   function adicionarAoCarrinho(produto: Produto) {
+    // captura antes de qualquer setState para a condição ser confiável
+    const temDesconto = desconto > 0;
+
+    if (temDesconto) {
+      limparDesconto();
+    } else {
+      exibirMensagem("sucesso", `✅ ${produto.name} adicionado`);
+    }
+
     setCarrinho((prev) => {
       const existente = prev.find((i) => i.produto.id === produto.id);
       if (existente) {
@@ -80,10 +125,10 @@ export default function PDV() {
       }
       return [...prev, { produto, quantidade: 1, preco_unitario: produto.list_price ?? 0 }];
     });
-    exibirMensagem("sucesso", `✅ ${produto.name} adicionado`);
   }
 
   function alterarQuantidade(produtoId: number, delta: number) {
+    if (desconto > 0) limparDesconto();
     setCarrinho((prev) =>
       prev
         .map((i) => i.produto.id === produtoId ? { ...i, quantidade: i.quantidade + delta } : i)
@@ -92,11 +137,21 @@ export default function PDV() {
   }
 
   function removerItem(produtoId: number) {
+    if (desconto > 0) limparDesconto();
     setCarrinho((prev) => prev.filter((i) => i.produto.id !== produtoId));
   }
 
-  function calcularTotal() {
+  function calcularTotalBruto() {
     return carrinho.reduce((acc, i) => acc + i.preco_unitario * i.quantidade, 0);
+  }
+
+  function calcularTotal() {
+    return Math.max(0, calcularTotalBruto() - desconto);
+  }
+
+  function cancelarVenda() {
+    setCarrinho([]);
+    setDesconto(0);
   }
 
   async function finalizarVenda() {
@@ -104,21 +159,16 @@ export default function PDV() {
       exibirMensagem("erro", "Carrinho vazio.");
       return;
     }
-
-    // NFC-e → abre modal de pagamento primeiro
     if (tipoVenda === "nfce") {
-      setModalPagamento(true);
+      abrirModalPagamento("dinheiro");
       return;
     }
-
-    // Recibo → fluxo direto
     await processarVenda();
   }
 
   async function processarVenda() {
     setFinalizando(true);
     try {
-      // 1. Baixa estoque no Odoo
       for (const item of carrinho) {
         const resultado = await registrarVenda(
           item.produto.id,
@@ -131,7 +181,6 @@ export default function PDV() {
         }
       }
 
-      // 2. Se NFC-e, emite pela Focus NFe
       if (tipoVenda === "nfce") {
         setEmitindoNFCe(true);
         const resultado = await emitirNFCe({
@@ -145,7 +194,8 @@ export default function PDV() {
           })),
           formaPagamento,
           cpfCnpjCliente: cpfCnpj.replace(/\D/g, "") || undefined,
-          valorTotal: calcularTotal(),
+          valorTotal:     calcularTotal(),
+          desconto,
         });
 
         setEmitindoNFCe(false);
@@ -162,9 +212,9 @@ export default function PDV() {
       }
 
       setCarrinho([]);
+      setDesconto(0);
       setModalPagamento(false);
       setCpfCnpj("");
-
     } catch {
       exibirMensagem("erro", "Erro ao finalizar venda.");
     } finally {
@@ -173,12 +223,12 @@ export default function PDV() {
     }
   }
 
-  const total = calcularTotal();
+  const totalBruto = calcularTotalBruto();
+  const total      = calcularTotal();
 
   return (
     <div className="pdv-container">
 
-      {/* Input invisível para capturar barcode */}
       <input
         ref={inputRef}
         className="barcode-input"
@@ -188,14 +238,12 @@ export default function PDV() {
         readOnly={buscando}
       />
 
-      {/* Mensagem de feedback */}
       {mensagem && (
         <div className={`mensagem mensagem-${mensagem.tipo}`}>
           {mensagem.texto}
         </div>
       )}
 
-      {/* Header */}
       <div className="pdv-header">
         <h2>PDV — Balcão</h2>
         <div className="tipo-venda-toggle">
@@ -214,10 +262,8 @@ export default function PDV() {
         </div>
       </div>
 
-      {/* Área principal */}
       <div className="pdv-body">
 
-        {/* Painel esquerdo — scanner */}
         <div className="pdv-scanner">
           {buscando ? (
             <div className="scanner-buscando">
@@ -237,7 +283,6 @@ export default function PDV() {
           )}
         </div>
 
-        {/* Painel direito — carrinho */}
         <div className="pdv-carrinho">
           <h3>Carrinho</h3>
 
@@ -265,8 +310,19 @@ export default function PDV() {
             </div>
           )}
 
-          {/* Rodapé do carrinho */}
           <div className="carrinho-footer">
+            {desconto > 0 && (
+              <>
+                <div className="carrinho-total" style={{ color: "#94a3b8", fontSize: "0.9rem" }}>
+                  <span>Subtotal</span>
+                  <span>R$ {totalBruto.toFixed(2)}</span>
+                </div>
+                <div className="carrinho-total" style={{ color: "#f87171" }}>
+                  <span>🏷️ Desconto</span>
+                  <span>− R$ {desconto.toFixed(2)}</span>
+                </div>
+              </>
+            )}
             <div className="carrinho-total">
               <span>Total</span>
               <span>R$ {total.toFixed(2)}</span>
@@ -281,7 +337,7 @@ export default function PDV() {
             {carrinho.length > 0 && (
               <button
                 className="btn-cancelar"
-                onClick={() => setCarrinho([])}
+                onClick={cancelarVenda}
                 disabled={finalizando}
               >
                 🗑️ Cancelar Venda
@@ -291,17 +347,67 @@ export default function PDV() {
         </div>
       </div>
 
-      {/* Hint F1 */}
-      <div className="f1-hint">Pressione F1 para listar produtos</div>
+      <div className="f1-hint">
+        <span><kbd>F1</kbd> Produtos</span>
+        <span><kbd>F2</kbd> Recibo/NFC-e</span>
+        <span><kbd>F3</kbd> Desconto</span>
+        <span><kbd>F4</kbd> Finalizar</span>
+        <span><kbd>Alt</kbd> Finalizar Débito</span>
+        <span><kbd>B</kbd> Cliente</span>
+      </div>
 
-      {/* Modal lista de produtos */}
       <ModalProdutos
         aberto={modalAberto}
         onFechar={() => { setModalAberto(false); inputRef.current?.focus(); }}
         onSelecionar={selecionarProdutoModal}
       />
 
-      {/* Modal de pagamento NFC-e */}
+      {modalCliente && (
+        <div className="modal-overlay" onClick={() => { setModalCliente(false); inputRef.current?.focus(); }}>
+          <div className="modal-pagamento" onClick={e => e.stopPropagation()}>
+            <div className="modal-pag-header">
+              <h3>👤 Identificar Cliente</h3>
+              <button className="modal-fechar" onClick={() => { setModalCliente(false); inputRef.current?.focus(); }}>✕</button>
+            </div>
+            <div className="modal-pag-body">
+              <div className="pag-section">
+                <label>CPF / CNPJ</label>
+                <input
+                  autoFocus
+                  type="text"
+                  value={cpfCnpj}
+                  onChange={e => setCpfCnpj(e.target.value)}
+                  placeholder="000.000.000-00 ou 00.000.000/0001-00"
+                  maxLength={18}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" || e.key === "Escape") {
+                      setModalCliente(false);
+                      inputRef.current?.focus();
+                    }
+                  }}
+                />
+              </div>
+            </div>
+            <div className="modal-pag-footer">
+              <button className="btn-cancelar-pag" onClick={() => { setCpfCnpj(""); setModalCliente(false); inputRef.current?.focus(); }}>
+                Limpar
+              </button>
+              <button className="btn-emitir-nfce" onClick={() => { setModalCliente(false); inputRef.current?.focus(); }}>
+                ✅ Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ModalDesconto
+      isOpen={modalDesconto}
+      totalBruto={totalBruto}
+      ultimoDesconto={ultimoDesconto}
+      onConfirmar={(valor) => { setDesconto(valor); setUltimoDesconto(valor); }}
+      onFechar={() => { setModalDesconto(false); inputRef.current?.focus(); }}
+      />
+
       {modalPagamento && (
         <div className="modal-overlay" onClick={() => setModalPagamento(false)}>
           <div className="modal-pagamento" onClick={e => e.stopPropagation()}>
@@ -339,11 +445,16 @@ export default function PDV() {
               <div className="pag-section">
                 <label>CPF/CNPJ na nota (opcional)</label>
                 <input
+                  autoFocus
                   type="text"
                   value={cpfCnpj}
                   onChange={e => setCpfCnpj(e.target.value)}
                   placeholder="000.000.000-00 ou 00.000.000/0001-00"
                   maxLength={18}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") processarVenda();
+                    if (e.key === "Escape") setModalPagamento(false);
+                  }}
                 />
               </div>
             </div>
@@ -366,7 +477,6 @@ export default function PDV() {
         </div>
       )}
 
-      {/* Modal DANFE */}
       {resultadoNFCe && (
         <div className="modal-overlay" onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}>
           <div className={`modal-danfe ${danfeHtml ? "modal-danfe-expanded" : ""}`} onClick={e => e.stopPropagation()}>
@@ -426,7 +536,6 @@ export default function PDV() {
           </div>
         </div>
       )}
-
     </div>
   );
 }

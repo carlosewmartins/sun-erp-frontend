@@ -16,6 +16,7 @@ export interface DadosNFCe {
   formaPagamento:  FormaPagamento;
   cpfCnpjCliente?: string;
   valorTotal:      number;
+  desconto?:       number; // ← desconto global em R$ (opcional)
 }
 
 export interface ResultadoNFCe {
@@ -40,7 +41,7 @@ const FORMA_PAGAMENTO_COD: Record<FormaPagamento, string> = {
 
 const FOCUS_URL   = "/focusnfe";
 const FOCUS_TOKEN = import.meta.env.VITE_FOCUSNFE_TOKEN;
-const FOCUS_BASE  = import.meta.env.VITE_FOCUSNFE_URL; // URL base para montar links
+const FOCUS_BASE  = import.meta.env.VITE_FOCUSNFE_URL;
 const CNPJ        = import.meta.env.VITE_FOCUSNFE_CNPJ;
 
 // ─── Funções auxiliares ──────────────────────────────────────────────────────
@@ -58,51 +59,87 @@ function montarUrl(caminho?: string): string | undefined {
   return `${FOCUS_BASE}${caminho}`;
 }
 
+// ─── Distribui desconto global proporcionalmente entre os itens ───────────────
+// A SEFAZ exige desconto por item — não existe desconto global na NFC-e.
+// A soma dos descontos deve ser exatamente igual ao desconto total,
+// por isso o resíduo de arredondamento vai para o último item.
+
+function distribuirDesconto(
+  itens: ItemNFCe[],
+  descontoGlobal: number
+): number[] {
+  if (descontoGlobal <= 0) return itens.map(() => 0);
+
+  const totalBruto = itens.reduce(
+    (acc, i) => acc + i.quantidade * i.valorUnit, 0
+  );
+
+  // arredonda cada item para 2 casas
+  const descontos = itens.map((item) => {
+    const valorItem = item.quantidade * item.valorUnit;
+    const peso      = valorItem / totalBruto;
+    return Math.round(descontoGlobal * peso * 100) / 100;
+  });
+
+  // corrige resíduo de arredondamento no último item
+  const somaDistribuida = descontos.reduce((a, b) => a + b, 0);
+  const residuo = Math.round((descontoGlobal - somaDistribuida) * 100) / 100;
+  descontos[descontos.length - 1] =
+    Math.round((descontos[descontos.length - 1] + residuo) * 100) / 100;
+
+  return descontos;
+}
+
 // ─── Emissão de NFC-e ────────────────────────────────────────────────────────
 
 export async function emitirNFCe(dados: DadosNFCe): Promise<ResultadoNFCe> {
   try {
-    const referencia = gerarReferencia();
+    const referencia      = gerarReferencia();
+    const descontoGlobal  = dados.desconto ?? 0;
+    const descontosItens  = distribuirDesconto(dados.itens, descontoGlobal);
 
-    // Monta os itens conforme documentação Focus NFe
-    const itens = dados.itens.map((item, index) => ({
-      numero_item:               String(index + 1),
-      codigo_produto:            String(item.produtoId),
-      codigo_barras:             item.barcode || "SEM GTIN",
-      descricao:                 item.nome,
-      codigo_ncm:                item.ncm || "00000000",
-      cfop:                      "5102",
-      unidade_comercial:         "UN",
-      quantidade_comercial:      formatarValor(item.quantidade),
-      valor_unitario_comercial:  formatarValor(item.valorUnit),
-      valor_bruto:               formatarValor(item.quantidade * item.valorUnit),
-      unidade_tributavel:        "UN",
-      quantidade_tributavel:     formatarValor(item.quantidade),
-      valor_unitario_tributavel: formatarValor(item.valorUnit),
-      valor_desconto:            "0.00",
-      valor_total_tributos:      "0.00",
+    const itens = dados.itens.map((item, index) => {
+      const valorBrutoItem    = item.quantidade * item.valorUnit;
+      const descontoItem      = descontosItens[index];
+      const valorLiquidoItem  = valorBrutoItem - descontoItem;
 
-      // ICMS — Simples Nacional CSOSN 400
-      icms_origem:              "0",
-      icms_situacao_tributaria: "400",
+      return {
+        numero_item:               String(index + 1),
+        codigo_produto:            String(item.produtoId),
+        codigo_barras:             item.barcode || "SEM GTIN",
+        descricao:                 item.nome,
+        codigo_ncm:                item.ncm || "00000000",
+        cfop:                      "5102",
+        unidade_comercial:         "UN",
+        quantidade_comercial:      formatarValor(item.quantidade),
+        valor_unitario_comercial:  formatarValor(item.valorUnit),
+        valor_bruto:               formatarValor(valorBrutoItem),
+        unidade_tributavel:        "UN",
+        quantidade_tributavel:     formatarValor(item.quantidade),
+        valor_unitario_tributavel: formatarValor(item.valorUnit),
+        valor_desconto:            formatarValor(descontoItem),   // ← desconto por item
+        valor_total_tributos:      formatarValor(valorLiquidoItem),
 
-      // PIS e COFINS — isentos
-      pis_situacao_tributaria:    "07",
-      cofins_situacao_tributaria: "07",
-    }));
+        // ICMS — Simples Nacional CSOSN 400
+        icms_origem:              "0",
+        icms_situacao_tributaria: "400",
 
-    // Monta o payload conforme documentação Focus NFe
+        // PIS e COFINS — isentos
+        pis_situacao_tributaria:    "07",
+        cofins_situacao_tributaria: "07",
+      };
+    });
+
     const payload = {
       cnpj_emitente:              CNPJ,
       natureza_operacao:          "Venda de mercadoria",
       data_emissao:               new Date().toISOString(),
       modalidade_frete:           "9",
-      regime_tributario_emitente: "1", // Simples Nacional
-      consumidor_final:           "1", // campo correto
-      presenca_comprador:         "1", // 1 = operação presencial
+      regime_tributario_emitente: "1",
+      consumidor_final:           "1",
+      presenca_comprador:         "1",
       finalidade_emissao:         "1",
 
-      // Cliente (opcional)
       ...(dados.cpfCnpjCliente && dados.cpfCnpjCliente.length === 11 && {
         cpf_destinatario: dados.cpfCnpjCliente,
       }),
@@ -110,17 +147,14 @@ export async function emitirNFCe(dados: DadosNFCe): Promise<ResultadoNFCe> {
         cnpj_destinatario: dados.cpfCnpjCliente,
       }),
 
-      // Itens
       items: itens,
 
-      // Pagamento
       formas_pagamento: [{
         forma_pagamento: FORMA_PAGAMENTO_COD[dados.formaPagamento],
-        valor_pagamento: formatarValor(dados.valorTotal),
+        valor_pagamento: formatarValor(dados.valorTotal), // ← já é o valor líquido
       }],
     };
 
-    // Envia para a Focus NFe
     const response = await fetch(
       `${FOCUS_URL}/v2/nfce?ref=${referencia}`,
       {
@@ -216,7 +250,6 @@ export async function consultarNFCe(
 // ─── Download autenticado do DANFE ───────────────────────────────────────────
 
 export async function buscarDanfeHtml(url: string): Promise<string> {
-  // Se for um caminho relativo, usa o proxy local
   const fetchUrl = url.startsWith("http")
     ? url.replace(FOCUS_BASE!, FOCUS_URL)
     : `${FOCUS_URL}${url}`;
@@ -227,9 +260,7 @@ export async function buscarDanfeHtml(url: string): Promise<string> {
     },
   });
 
-  if (!response.ok) {
-    throw new Error("Erro ao baixar DANFE");
-  }
+  if (!response.ok) throw new Error("Erro ao baixar DANFE");
 
   return await response.text();
 }

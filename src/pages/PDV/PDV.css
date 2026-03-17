@@ -505,3 +505,9 @@
   transition: background 0.15s;
 }
 .btn-danfe:hover { background: #16a34a; }
+
+.mensagem-aviso {
+  background-color: #854d0e;
+  border-color: #ca8a04;
+  color: #fef08a;
+}
