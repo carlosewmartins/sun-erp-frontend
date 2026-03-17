@@ -23,7 +23,7 @@ import {
   PrinterOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import { buscarPorBarcode, registrarVenda } from "../../services/odoo";
+import { buscarPorBarcode, registrarVenda, execute } from "../../services/odoo"; // ← execute adicionado
 import { Produto, ItemVenda, TipoVenda } from "../../types";
 import ModalProdutos from "../../components/ui/ModalProdutos";
 import ModalDesconto from "../../components/ui/ModalDesconto";
@@ -44,10 +44,8 @@ const C = {
 } as const;
 
 export default function PDV() {
-  // ── App.useApp() substitui o estado [mensagem] + setTimeout manual ──────────
   const { message, modal } = App.useApp();
 
-  // ── Estados (idênticos ao original) ─────────────────────────────────────────
   const [tipoVenda, setTipoVenda]             = useState<TipoVenda>("recibo");
   const [carrinho, setCarrinho]               = useState<ItemVenda[]>([]);
   const [desconto, setDesconto]               = useState(0);
@@ -74,12 +72,10 @@ export default function PDV() {
     modalDesconto  ||
     !!resultadoNFCe;
 
-  // ── Helper refocus ───────────────────────────────────────────────────────────
   function refocusInput() {
     inputRef.current?.focus();
   }
 
-  // ── Abrir modal de pagamento ─────────────────────────────────────────────────
   function abrirModalPagamento(formaInicial: FormaPagamento = "dinheiro") {
     if (carrinho.length === 0) {
       message.error("Carrinho vazio.");
@@ -89,7 +85,6 @@ export default function PDV() {
     setModalPagamento(true);
   }
 
-  // ── Atalhos de teclado (lógica preservada — hook intocável) ─────────────────
   usePDVShortcuts(
     {
       onF1:  () => setModalAberto(true),
@@ -101,8 +96,6 @@ export default function PDV() {
     algumModalAberto,
   );
 
-  // ── Refocus automático no input de barcode ───────────────────────────────────
-  // Pausa enquanto qualquer modal estiver aberto para não roubar o foco dos inputs
   useEffect(() => {
     const refocus = () => {
       if (!algumModalAberto) inputRef.current?.focus();
@@ -112,14 +105,11 @@ export default function PDV() {
     return () => document.removeEventListener("click", refocus);
   }, [algumModalAberto]);
 
-  // ── Feedback visual (substitui estado [mensagem] + div manual) ───────────────
   function exibirMensagem(tipo: "sucesso" | "erro" | "aviso", texto: string) {
     if (tipo === "sucesso") message.success(texto);
     else if (tipo === "erro") message.error(texto);
     else message.warning(texto);
   }
-
-  // ── Lógica de negócio (100% preservada) ────────────────────────────────────
 
   function selecionarProdutoModal(produto: Produto) {
     adicionarAoCarrinho(produto);
@@ -204,7 +194,6 @@ export default function PDV() {
     setDesconto(0);
   }
 
-  // Modal.confirm substitui o clique direto — confirmação antes de destruir o carrinho
   function confirmarCancelamento() {
     modal.confirm({
       title: "Cancelar venda?",
@@ -230,8 +219,17 @@ export default function PDV() {
     await processarVenda();
   }
 
+  // ─── processarVenda ────────────────────────────────────────────────────────
+  // Patch: coleta os picking IDs retornados por registrarVenda() e, após
+  // concluir a venda, persiste no Odoo:
+  //   - Recibo: origin = "RECIBO-{timestamp}" para agrupamento nos relatórios
+  //   - NFC-e:  origin = "NFCE-{chave_curta}" + note = chave completa (44 dígitos)
+  //             para identificação e reimpressão futura
+  // O bloco try/catch isola essa gravação — falha silenciosa, não bloqueia a venda.
   async function processarVenda() {
     setFinalizando(true);
+    const pickingIds: number[] = []; // ← coleta IDs para gravação posterior
+
     try {
       for (const item of carrinho) {
         const resultado = await registrarVenda(
@@ -242,6 +240,10 @@ export default function PDV() {
         if (!resultado.sucesso) {
           exibirMensagem("erro", `Erro em ${item.produto.name}: ${resultado.erro}`);
           return;
+        }
+        // picking_id é o picking real (WH/Estoque → Clientes)
+        if (resultado.picking_id) {
+          pickingIds.push(resultado.picking_id);
         }
       }
 
@@ -269,9 +271,39 @@ export default function PDV() {
           return;
         }
 
+        // ── Persiste chave NFC-e nos pickings (não bloqueia em caso de falha) ──
+        if (resultado.chave && pickingIds.length > 0) {
+          try {
+            await execute("stock.picking", "write", [
+              pickingIds,
+              {
+                // origin: identificador curto visível no Odoo e nos filtros
+                origin: `NFCE-${resultado.chave.slice(-8)}`,
+                // note: chave completa (44 dígitos) para reimpressão futura
+                note: resultado.chave,
+              },
+            ]);
+          } catch {
+            // Gravação de metadados — não interrompe o fluxo da venda
+          }
+        }
+
         setResultadoNFCe({ danfeUrl: resultado.danfeUrl, chave: resultado.chave });
         exibirMensagem("sucesso", "NFC-e autorizada com sucesso!");
+
       } else {
+        // ── Persiste referência de agrupamento no recibo (não bloqueia) ────────
+        if (pickingIds.length > 0) {
+          try {
+            await execute("stock.picking", "write", [
+              pickingIds,
+              { origin: `RECIBO-${Date.now()}` },
+            ]);
+          } catch {
+            // Gravação de metadados — não interrompe o fluxo da venda
+          }
+        }
+
         exibirMensagem("sucesso", "Venda finalizada!");
       }
 
@@ -290,7 +322,6 @@ export default function PDV() {
   const totalBruto = calcularTotalBruto();
   const total      = calcularTotal();
 
-  // ── JSX ─────────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 20, position: "relative" }}>
 
@@ -369,7 +400,6 @@ export default function PDV() {
             style={{ width: "100%", display: "flex", flexDirection: "column" }}
             styles={{ body: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "12px 24px" } }}
           >
-            {/* Lista de itens */}
             {carrinho.length === 0 ? (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <Text type="secondary" style={{ fontSize: 15 }}>Nenhum item adicionado</Text>
@@ -549,7 +579,7 @@ export default function PDV() {
         </div>
       </Modal>
 
-      {/* ── Modal Desconto (F3) — lógica crítica preservada no componente original ── */}
+      {/* ── Modal Desconto (F3) ── */}
       <ModalDesconto
         isOpen={modalDesconto}
         totalBruto={totalBruto}
@@ -582,7 +612,6 @@ export default function PDV() {
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 20, padding: "16px 0" }}>
 
-          {/* Total em destaque */}
           <div style={{
             display: "flex", justifyContent: "space-between", alignItems: "center",
             padding: "14px 18px", background: C.amberBg, borderRadius: 12,
@@ -593,7 +622,6 @@ export default function PDV() {
             </Text>
           </div>
 
-          {/* Forma de pagamento */}
           <div>
             <Text
               type="secondary"
@@ -626,7 +654,6 @@ export default function PDV() {
             </Radio.Group>
           </div>
 
-          {/* CPF/CNPJ na nota */}
           <div>
             <Text
               type="secondary"
@@ -697,7 +724,6 @@ export default function PDV() {
           display: "flex", flexDirection: "column", gap: 16, padding: "16px 0",
           ...(danfeHtml ? { flex: 1 } : {}),
         }}>
-          {/* Chave de acesso */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <Text type="secondary" style={{ fontWeight: 600, fontSize: 13 }}>
               Chave de acesso
@@ -711,7 +737,6 @@ export default function PDV() {
             </code>
           </div>
 
-          {/* Botão visualizar DANFE */}
           {resultadoNFCe?.danfeUrl && !danfeHtml && (
             <Button
               type="primary"
@@ -737,7 +762,6 @@ export default function PDV() {
             </Button>
           )}
 
-          {/* iframe do DANFE */}
           {danfeHtml && (
             <iframe
               srcDoc={danfeHtml}
