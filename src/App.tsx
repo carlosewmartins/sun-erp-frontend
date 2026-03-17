@@ -8,6 +8,8 @@ import { pdvTheme } from "./theme";
 import PDV from "./pages/PDV/PDV";
 import Produtos from "./pages/Produtos/Produtos";
 import Entrada from "./pages/Entrada/Entrada";
+import Relatorios from './pages/Relatorios/Relatorios'
+import { BarChartOutlined } from '@ant-design/icons'
 
 const { Sider, Content } = Layout;
 const { Text } = Typography;
@@ -24,6 +26,7 @@ const MENU_ITEMS: MenuProps["items"] = [
   { key: "/",         icon: <span>🛒</span>, label: "PDV"      },
   { key: "/produtos", icon: <span>📦</span>, label: "Produtos" },
   { key: "/entrada",  icon: <span>📥</span>, label: "Entrada"  },
+  { key: '/relatorios', icon: <BarChartOutlined />, label: 'Relatórios' }
 ];
 
 // Componente interno — precisa estar dentro do BrowserRouter para usar useNavigate/useLocation
@@ -84,6 +87,7 @@ function AppLayout() {
             <Route path="/"         element={<PDV />}      />
             <Route path="/produtos" element={<Produtos />} />
             <Route path="/entrada"  element={<Entrada />}  />
+            <Route path="/relatorios" element={<Relatorios />} />
           </Routes>
         </Content>
       </Layout>
