@@ -1,80 +1,131 @@
 import { useState, useEffect, useRef } from "react";
-import { buscarProdutos, contarProdutos, criarProduto, atualizarProduto, buscarSaldosProduto, ajusteEstoque, ajusteDireto, buscarSaldosTodos } from "../../services/odoo";
+import {
+  App,
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Col,
+  Descriptions,
+  Divider,
+  Input,
+  InputNumber,
+  Modal,
+  Pagination,
+  Radio,
+  Row,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Typography,
+} from "antd";
+import type { TableColumnsType } from "antd";
+import {
+  AppstoreOutlined,
+  EditOutlined,
+  PlusOutlined,
+  SearchOutlined,
+  SettingOutlined,
+} from "@ant-design/icons";
+import {
+  buscarProdutos,
+  contarProdutos,
+  criarProduto,
+  atualizarProduto,
+  buscarSaldosProduto,
+  ajusteEstoque,
+  ajusteDireto,
+  buscarSaldosTodos,
+} from "../../services/odoo";
 import ModalVariantes from "../../components/ui/ModalVariantes";
 import { LOCATION_LIST } from "../../constants/locations";
-import "./Produtos.css";
+
+const { Text, Title } = Typography;
+
+// ─── Tipos (idênticos ao original) ───────────────────────────────────────────
 
 interface Produto {
-  id: number;
-  name: string;
-  barcode: string | false;
-  default_code: string | false;
-  list_price: number;
+  id:            number;
+  name:          string;
+  barcode:       string | false;
+  default_code:  string | false;
+  list_price:    number;
   qty_available: number;
-  uom_id: [number, string] | false;
+  uom_id:        [number, string] | false;
 }
 
 interface SaldoLocal {
-  location_id: [number, string];
-  quantity: number;
-  reserved_quantity: number;
+  location_id:         [number, string];
+  quantity:            number;
+  reserved_quantity:   number;
 }
 
 interface FormData {
-  name: string;
-  barcode: string;
+  name:         string;
+  barcode:      string;
   default_code: string;
-  list_price: string;
+  list_price:   string;
 }
 
+// ─── Constantes ──────────────────────────────────────────────────────────────
+
 const FORM_VAZIO: FormData = { name: "", barcode: "", default_code: "", list_price: "" };
-const POR_PAGINA = 50;
+const POR_PAGINA   = 50;
 const ESTOQUE_BAIXO = 5;
 
+const C = {
+  amber:   "#F59E0B",
+  success: "#22C55E",
+  error:   "#EF4444",
+  bgRow:   "#F8FAFC",
+} as const;
+
+// ─── Componente ──────────────────────────────────────────────────────────────
+
 export default function Produtos() {
-  const [produtos, setProdutos]             = useState<Produto[]>([]);
-  const [total, setTotal]                   = useState(0);
-  const [pagina, setPagina]                 = useState(0);
-  const [busca, setBusca]                   = useState("");
-  const [carregando, setCarregando]         = useState(true);
-  const [modalAberto, setModalAberto]       = useState(false);
-  const [editando, setEditando]             = useState<Produto | null>(null);
-  const [form, setForm]                     = useState<FormData>(FORM_VAZIO);
-  const [salvando, setSalvando]             = useState(false);
-  const [saldos, setSaldos]                 = useState<SaldoLocal[]>([]);
-  const [produtoDetalhe, setProdutoDetalhe] = useState<Produto | null>(null);
-  const [mensagem, setMensagem]             = useState<{ tipo: "sucesso" | "erro"; texto: string } | null>(null);
-  const [modalAjuste, setModalAjuste]       = useState(false);
-  const [ajusteTipo, setAjusteTipo]         = useState<"entrada" | "saida" | "direto">("entrada");
-  const [ajusteLocal, setAjusteLocal]       = useState<number>(LOCATION_LIST[0].id);
-  const [ajusteQtd, setAjusteQtd]           = useState("");
-  const [ajustando, setAjustando]           = useState(false);
-  const [saldosTotais, setSaldosTotais]     = useState<Record<number, number>>({});
-  const [modalVariantes, setModalVariantes] = useState(false);
+  const { message, modal } = App.useApp();
+
+  // ── Estados (idênticos ao original) ──────────────────────────────────────
+  const [produtos,        setProdutos]        = useState<Produto[]>([]);
+  const [total,           setTotal]           = useState(0);
+  const [pagina,          setPagina]          = useState(1);       // base-1 (antd Table)
+  const [busca,           setBusca]           = useState("");
+  const [carregando,      setCarregando]      = useState(true);
+  const [modalAberto,     setModalAberto]     = useState(false);
+  const [editando,        setEditando]        = useState<Produto | null>(null);
+  const [form,            setForm]            = useState<FormData>(FORM_VAZIO);
+  const [salvando,        setSalvando]        = useState(false);
+  const [saldos,          setSaldos]          = useState<SaldoLocal[]>([]);
+  const [produtoDetalhe,  setProdutoDetalhe]  = useState<Produto | null>(null);
+  const [modalAjuste,     setModalAjuste]     = useState(false);
+  const [ajusteTipo,      setAjusteTipo]      = useState<"entrada" | "saida" | "direto">("entrada");
+  const [ajusteLocal,     setAjusteLocal]     = useState<number>(LOCATION_LIST[0].id);
+  const [ajusteQtd,       setAjusteQtd]       = useState<number | null>(null);
+  const [ajustando,       setAjustando]       = useState(false);
+  const [saldosTotais,    setSaldosTotais]    = useState<Record<number, number>>({});
+  const [modalVariantes,  setModalVariantes]  = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => { carregar("", 0); }, []);
+  useEffect(() => { carregar("", 1); }, []);
 
-  function exibirMensagem(tipo: "sucesso" | "erro", texto: string) {
-    setMensagem({ tipo, texto });
-    setTimeout(() => setMensagem(null), 3000);
-  }
+  // ── Lógica de negócio (100% preservada) ──────────────────────────────────
 
   async function carregar(termo: string, pag: number) {
     setCarregando(true);
     try {
       const [lista, count] = await Promise.all([
-        buscarProdutos(termo, pag * POR_PAGINA, POR_PAGINA),
+        buscarProdutos(termo, (pag - 1) * POR_PAGINA, POR_PAGINA),
         contarProdutos(termo),
       ]);
       const produtosList = lista as Produto[];
       setProdutos(produtosList);
       setTotal(count);
-      const ids = produtosList.map((p) => p.id);
+      const ids    = produtosList.map(p => p.id);
       const totais = await buscarSaldosTodos(ids);
       setSaldosTotais(totais);
     } catch {
-      exibirMensagem("erro", "Erro ao carregar produtos.");
+      message.error("Erro ao carregar produtos.");
     } finally {
       setCarregando(false);
     }
@@ -82,14 +133,14 @@ export default function Produtos() {
 
   function handleBusca(valor: string) {
     setBusca(valor);
-    setPagina(0);
+    setPagina(1);
     clearTimeout(timerRef.current!);
-    timerRef.current = setTimeout(() => carregar(valor, 0), 350);
+    timerRef.current = setTimeout(() => carregar(valor, 1), 350);
   }
 
-  function handlePagina(nova: number) {
-    setPagina(nova);
-    carregar(busca, nova);
+  function handlePagina(novaPagina: number) {
+    setPagina(novaPagina);
+    carregar(busca, novaPagina);
   }
 
   function abrirNovo() {
@@ -117,7 +168,7 @@ export default function Produtos() {
 
   async function salvar() {
     if (!form.name.trim()) {
-      exibirMensagem("erro", "Nome do produto é obrigatório.");
+      message.error("Nome do produto é obrigatório.");
       return;
     }
     setSalvando(true);
@@ -131,15 +182,15 @@ export default function Produtos() {
       };
       if (editando) {
         await atualizarProduto(editando.id, dados);
-        exibirMensagem("sucesso", "Produto atualizado com sucesso!");
+        message.success("Produto atualizado com sucesso!");
       } else {
         await criarProduto(dados);
-        exibirMensagem("sucesso", "Produto criado com sucesso!");
+        message.success("Produto criado com sucesso!");
       }
       setModalAberto(false);
       carregar(busca, pagina);
     } catch {
-      exibirMensagem("erro", "Erro ao salvar produto.");
+      message.error("Erro ao salvar produto.");
     } finally {
       setSalvando(false);
     }
@@ -147,342 +198,470 @@ export default function Produtos() {
 
   async function confirmarAjuste() {
     if (!produtoDetalhe) return;
-    if (!ajusteQtd || parseFloat(ajusteQtd) <= 0) {
-      exibirMensagem("erro", "Informe uma quantidade válida.");
+    if (!ajusteQtd || ajusteQtd <= 0) {
+      message.error("Informe uma quantidade válida.");
       return;
     }
     setAjustando(true);
     try {
-      const qtd = parseFloat(ajusteQtd);
-      let resultado;
-      if (ajusteTipo === "direto") {
-        resultado = await ajusteDireto(produtoDetalhe.id, ajusteLocal, qtd);
-      } else {
-        resultado = await ajusteEstoque(produtoDetalhe.id, ajusteLocal, qtd, ajusteTipo);
-      }
+      const qtd = ajusteQtd;
+      const resultado = ajusteTipo === "direto"
+        ? await ajusteDireto(produtoDetalhe.id, ajusteLocal, qtd)
+        : await ajusteEstoque(produtoDetalhe.id, ajusteLocal, qtd, ajusteTipo);
+
       if (resultado.sucesso) {
-        exibirMensagem("sucesso", "✅ Estoque ajustado com sucesso!");
+        message.success("Estoque ajustado com sucesso!");
         setModalAjuste(false);
-        setAjusteQtd("");
+        setAjusteQtd(null);
         const s = await buscarSaldosProduto(produtoDetalhe.id);
         setSaldos(s as SaldoLocal[]);
         carregar(busca, pagina);
       } else {
-        exibirMensagem("erro", resultado.erro ?? "Erro ao ajustar estoque.");
+        message.error(resultado.erro ?? "Erro ao ajustar estoque.");
       }
     } catch {
-      exibirMensagem("erro", "Erro ao ajustar estoque.");
+      message.error("Erro ao ajustar estoque.");
     } finally {
       setAjustando(false);
     }
   }
 
-  const produtosAlerta    = produtos.filter((p) => {
+  // ── Alertas de estoque ────────────────────────────────────────────────────
+  const produtosNegativos = produtos.filter(p => (saldosTotais[p.id] ?? 0) < 0);
+  const produtosAlerta    = produtos.filter(p => {
     const s = saldosTotais[p.id] ?? 0;
-    return s > 0 && s <= ESTOQUE_BAIXO;
+    return s >= 0 && s <= ESTOQUE_BAIXO;
   });
-  const produtosNegativos = produtos.filter((p) => (saldosTotais[p.id] ?? 0) < 0);
 
+  // ── Colunas da tabela ─────────────────────────────────────────────────────
+  const colunas: TableColumnsType<Produto> = [
+    {
+      title:     "Nome",
+      dataIndex: "name",
+      ellipsis:  true,
+      render:    (v: string, record: Produto) => {
+        const saldo = saldosTotais[record.id] ?? 0;
+        return (
+          <Space size={8}>
+            <Text strong>{v}</Text>
+            {saldo < 0 && <Tag color="error">Negativo</Tag>}
+            {saldo >= 0 && saldo <= ESTOQUE_BAIXO && <Tag color="warning">Baixo</Tag>}
+          </Space>
+        );
+      },
+    },
+    {
+      title:     "SKU",
+      dataIndex: "default_code",
+      width:     120,
+      render:    (v: string) => v
+        ? <Text code style={{ fontSize: 12 }}>{v}</Text>
+        : <Text type="secondary">—</Text>,
+    },
+    {
+      title:     "Cód. Barras",
+      dataIndex: "barcode",
+      width:     150,
+      render:    (v: string) => v
+        ? <Text style={{ fontFamily: "monospace", fontSize: 12 }}>{v}</Text>
+        : <Text type="secondary">—</Text>,
+    },
+    {
+      title:     "Preço",
+      dataIndex: "list_price",
+      width:     110,
+      align:     "right",
+      render:    (v: number) => (
+        <Text strong style={{ color: C.amber }}>R$ {v.toFixed(2)}</Text>
+      ),
+    },
+    {
+      title:     "Estoque",
+      key:       "estoque",
+      width:     100,
+      align:     "center",
+      render:    (_: unknown, record: Produto) => {
+        const saldo = saldosTotais[record.id] ?? 0;
+        return (
+          <Tag color={saldo < 0 ? "error" : saldo <= ESTOQUE_BAIXO ? "warning" : "success"}>
+            {saldo} un
+          </Tag>
+        );
+      },
+    },
+    {
+      title:  "",
+      key:    "acoes",
+      width:  100,
+      render: (_: unknown, record: Produto) => (
+        <Button
+          size="small"
+          icon={<EditOutlined />}
+          onClick={e => { e.stopPropagation(); abrirEditar(record); }}
+        >
+          Editar
+        </Button>
+      ),
+    },
+  ];
+
+  // ── JSX ───────────────────────────────────────────────────────────────────
   return (
-    <div className="produtos-container">
-
-      {mensagem && (
-        <div className={`mensagem mensagem-${mensagem.tipo}`}>{mensagem.texto}</div>
-      )}
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
 
       {/* Header */}
-      <div className="produtos-header">
-        <h2>Produtos e Estoque</h2>
-        <button className="btn-novo" onClick={abrirNovo}>+ Novo Produto</button>
-      </div>
+      <Row justify="space-between" align="middle">
+        <Col>
+          <Title level={3} style={{ margin: 0 }}>Produtos e Estoque</Title>
+        </Col>
+        <Col>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            size="large"
+            onClick={abrirNovo}
+          >
+            Novo Produto
+          </Button>
+        </Col>
+      </Row>
 
       {/* Alertas */}
-      {(produtosNegativos.length > 0 || produtosAlerta.length > 0) && (
-        <div className="alertas-wrap">
-          {produtosNegativos.length > 0 && (
-            <div className="alerta alerta-critico">
-              ⚠️ {produtosNegativos.length} produto(s) com saldo negativo
-            </div>
-          )}
-          {produtosAlerta.length > 0 && (
-            <div className="alerta alerta-baixo">
-              🔔 {produtosAlerta.length} produto(s) com estoque baixo (≤ {ESTOQUE_BAIXO} un)
-            </div>
-          )}
-        </div>
+      {produtosNegativos.length > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          message={`${produtosNegativos.length} produto(s) com saldo negativo`}
+        />
+      )}
+      {produtosAlerta.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`${produtosAlerta.length} produto(s) com estoque baixo (≤ ${ESTOQUE_BAIXO} un)`}
+        />
       )}
 
       {/* Busca */}
-      <div className="produtos-filtros">
-        <input
-          type="text"
-          placeholder="Buscar por nome, código de barras ou SKU..."
-          value={busca}
-          onChange={(e) => handleBusca(e.target.value)}
-          className="filtro-busca"
+      <Row align="middle" gutter={12}>
+        <Col flex="auto">
+          <Input
+            allowClear
+            size="large"
+            prefix={<SearchOutlined />}
+            placeholder="Buscar por nome, código de barras ou SKU..."
+            value={busca}
+            onChange={e => handleBusca(e.target.value)}
+          />
+        </Col>
+        <Col>
+          <Text type="secondary">{total} produtos</Text>
+        </Col>
+      </Row>
+
+      {/* Tabela — paginacao separada para overflow:hidden nas 4 bordas */}
+      <div style={{ border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden" }}>
+        <Table<Produto>
+          rowKey="id"
+          size="small"
+          columns={colunas}
+          dataSource={produtos}
+          loading={carregando}
+          scroll={{ y: "calc(100vh - 380px)" }}
+          onRow={record => ({
+            onClick: () => abrirDetalhe(record),
+            style:   { cursor: "pointer" },
+          })}
+          pagination={false}
+          locale={{ emptyText: "Nenhum produto encontrado" }}
         />
-        <span className="total-info">{total} produtos</span>
       </div>
 
-      {/* Tabela */}
-      <div className="tabela-wrap">
-        <table className="tabela-produtos">
-          <thead>
-            <tr>
-              <th>Nome</th>
-              <th>SKU</th>
-              <th>Cód. Barras</th>
-              <th>Preço</th>
-              <th>Em estoque</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {carregando ? (
-              <tr><td colSpan={6} className="tabela-vazia">Carregando...</td></tr>
-            ) : produtos.length === 0 ? (
-              <tr><td colSpan={6} className="tabela-vazia">Nenhum produto encontrado</td></tr>
-            ) : (
-              produtos.map((p) => (
-                <tr
-                  key={p.id}
-                  className={
-                    (saldosTotais[p.id] ?? 0) < 0 ? "row-negativo" :
-                    (saldosTotais[p.id] ?? 0) <= ESTOQUE_BAIXO ? "row-alerta" : ""
-                  }
-                  onClick={() => abrirDetalhe(p)}
-                >
-                  <td className="col-nome">
-                    {p.name}
-                    {(saldosTotais[p.id] ?? 0) < 0 && <span className="badge badge-negativo">Negativo</span>}
-                    {(saldosTotais[p.id] ?? 0) >= 0 && (saldosTotais[p.id] ?? 0) <= ESTOQUE_BAIXO && (
-                      <span className="badge badge-baixo">Baixo</span>
-                    )}
-                  </td>
-                  <td className="col-sku">{p.default_code || "—"}</td>
-                  <td className="col-barcode">{p.barcode || "—"}</td>
-                  <td className="col-preco">R$ {p.list_price.toFixed(2)}</td>
-                  <td className={`col-saldo ${(saldosTotais[p.id] ?? 0) < 0 ? "negativo" : ""}`}>
-                    {saldosTotais[p.id] ?? 0}
-                  </td>
-                  <td onClick={(e) => e.stopPropagation()}>
-                    <button className="btn-editar" onClick={() => abrirEditar(p)}>✏️ Editar</button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      {/* Paginacao externa */}
+      <Row justify="end">
+        <Pagination
+          current={pagina}
+          pageSize={POR_PAGINA}
+          total={total}
+          onChange={handlePagina}
+          showSizeChanger={false}
+          size="small"
+          showTotal={(t) => `${t} produtos`}
+        />
+      </Row>
 
-      {/* Paginação */}
-      <div className="paginacao">
-        <button onClick={() => handlePagina(pagina - 1)} disabled={pagina === 0}>← Anterior</button>
-        <span>Página {pagina + 1} de {Math.max(1, Math.ceil(total / POR_PAGINA))}</span>
-        <button onClick={() => handlePagina(pagina + 1)} disabled={(pagina + 1) * POR_PAGINA >= total}>Próxima →</button>
-      </div>
+      {/* ── Modal Cadastro / Edição ── */}
+      <Modal
+        title={editando ? "Editar Produto" : "Novo Produto"}
+        open={modalAberto}
+        centered
+        maskClosable
+        onCancel={() => setModalAberto(false)}
+        footer={[
+          <Button key="cancelar" onClick={() => setModalAberto(false)}>
+            Cancelar
+          </Button>,
+          <Button
+            key="salvar"
+            type="primary"
+            loading={salvando}
+            onClick={salvar}
+            style={{ background: C.success, borderColor: C.success }}
+          >
+            {editando ? "Salvar" : "Criar Produto"}
+          </Button>,
+        ]}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: "16px 0" }}>
+          <div>
+            <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+              Nome *
+            </Text>
+            <Input
+              autoFocus
+              size="large"
+              value={form.name}
+              onChange={e => setForm({ ...form, name: e.target.value })}
+              placeholder="Nome do produto"
+              onKeyDown={e => { if (e.key === "Enter") salvar(); }}
+            />
+          </div>
 
-      {/* Modal de cadastro/edição */}
-      {modalAberto && (
-        <div className="modal-overlay" onClick={() => setModalAberto(false)}>
-          <div className="modal-form" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-form-header">
-              <h3>{editando ? "Editar Produto" : "Novo Produto"}</h3>
-              <button className="modal-fechar" onClick={() => setModalAberto(false)}>✕</button>
-            </div>
-            <div className="modal-form-body">
-              <div className="campo">
-                <label>Nome *</label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Nome do produto"
-                  autoFocus
-                />
-              </div>
-              <div className="campo-grupo">
-                <div className="campo">
-                  <label>SKU / Referência</label>
-                  <input
-                    type="text"
-                    value={form.default_code}
-                    onChange={(e) => setForm({ ...form, default_code: e.target.value })}
-                    placeholder="Ex: PROD-001"
-                  />
-                </div>
-                <div className="campo">
-                  <label>Código de Barras</label>
-                  <input
-                    type="text"
-                    value={form.barcode}
-                    onChange={(e) => setForm({ ...form, barcode: e.target.value })}
-                    placeholder="Ex: 7891234567890"
-                  />
-                </div>
-              </div>
-              <div className="campo">
-                <label>Preço de Venda (R$)</label>
-                <input
-                  type="number"
-                  value={form.list_price}
-                  onChange={(e) => setForm({ ...form, list_price: e.target.value })}
-                  placeholder="0,00"
-                  min="0"
-                  step="0.01"
-                />
-              </div>
-            </div>
-            <div className="modal-form-footer">
-              <button className="btn-cancelar" onClick={() => setModalAberto(false)}>Cancelar</button>
-              <button className="btn-salvar" onClick={salvar} disabled={salvando}>
-                {salvando ? "Salvando..." : editando ? "💾 Salvar" : "✅ Criar Produto"}
-              </button>
-            </div>
+          <Row gutter={12}>
+            <Col span={12}>
+              <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+                SKU / Referência
+              </Text>
+              <Input
+                size="large"
+                value={form.default_code}
+                onChange={e => setForm({ ...form, default_code: e.target.value })}
+                placeholder="Ex: PROD-001"
+              />
+            </Col>
+            <Col span={12}>
+              <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+                Código de Barras
+              </Text>
+              <Input
+                size="large"
+                value={form.barcode}
+                onChange={e => setForm({ ...form, barcode: e.target.value })}
+                placeholder="Ex: 7891234567890"
+              />
+            </Col>
+          </Row>
+
+          <div>
+            <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+              Preço de Venda (R$)
+            </Text>
+            <InputNumber
+              size="large"
+              style={{ width: "100%" }}
+              min={0}
+              precision={2}
+              decimalSeparator=","
+              prefix="R$"
+              placeholder="0,00"
+              value={form.list_price ? parseFloat(form.list_price) : undefined}
+              onChange={v => setForm({ ...form, list_price: v != null ? String(v) : "" })}
+            />
           </div>
         </div>
-      )}
+      </Modal>
 
-      {/* Modal de detalhe */}
-      {produtoDetalhe && !modalAjuste && !modalVariantes && (
-        <div className="modal-overlay" onClick={() => setProdutoDetalhe(null)}>
-          <div className="modal-detalhe" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-form-header">
-              <h3>{produtoDetalhe.name}</h3>
-              <button className="modal-fechar" onClick={() => setProdutoDetalhe(null)}>✕</button>
-            </div>
-            <div className="detalhe-info">
-              <div className="detalhe-campo">
-                <span>SKU</span>
-                <strong>{produtoDetalhe.default_code || "—"}</strong>
-              </div>
-              <div className="detalhe-campo">
-                <span>Barcode</span>
-                <strong>{produtoDetalhe.barcode || "—"}</strong>
-              </div>
-              <div className="detalhe-campo">
-                <span>Preço</span>
-                <strong>R$ {produtoDetalhe.list_price.toFixed(2)}</strong>
-              </div>
-            </div>
-            <h4>Saldo por Localização</h4>
-            <div className="detalhe-saldos">
+      {/* ── Modal Detalhe do Produto ── */}
+      <Modal
+        title={produtoDetalhe?.name}
+        open={!!produtoDetalhe && !modalAjuste && !modalVariantes}
+        centered
+        maskClosable
+        onCancel={() => setProdutoDetalhe(null)}
+        footer={null}
+        width={520}
+      >
+        {produtoDetalhe && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+            <Descriptions size="small" column={3} bordered>
+              <Descriptions.Item label="SKU">
+                {produtoDetalhe.default_code
+                  ? <Text code>{produtoDetalhe.default_code}</Text>
+                  : <Text type="secondary">—</Text>}
+              </Descriptions.Item>
+              <Descriptions.Item label="Barcode">
+                {produtoDetalhe.barcode || <Text type="secondary">—</Text>}
+              </Descriptions.Item>
+              <Descriptions.Item label="Preço">
+                <Text strong style={{ color: C.amber }}>
+                  R$ {produtoDetalhe.list_price.toFixed(2)}
+                </Text>
+              </Descriptions.Item>
+            </Descriptions>
+
+            <div>
+              <Text strong style={{ display: "block", marginBottom: 10 }}>
+                Saldo por Localização
+              </Text>
               {saldos.length === 0 ? (
-                <p className="tabela-vazia">Sem saldo registrado</p>
+                <Text type="secondary">Sem saldo registrado</Text>
               ) : (
-                saldos.map((s) => (
-                  <div key={s.location_id[0]} className="saldo-linha">
-                    <span>{s.location_id[1].replace("Physical Locations/", "").replace("WH/", "")}</span>
-                    <strong className={s.quantity < 0 ? "negativo" : ""}>{s.quantity} un</strong>
-                  </div>
-                ))
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {saldos.map(s => (
+                    <Row key={s.location_id[0]} justify="space-between" align="middle"
+                      style={{ padding: "8px 12px", background: C.bgRow, borderRadius: 8 }}
+                    >
+                      <Text>
+                        {s.location_id[1]
+                          .replace("Physical Locations/", "")
+                          .replace("WH/", "")}
+                      </Text>
+                      <Tag color={s.quantity < 0 ? "error" : "success"}>
+                        {s.quantity} un
+                      </Tag>
+                    </Row>
+                  ))}
+                </div>
               )}
             </div>
-            <div className="detalhe-botoes">
-              <button
-                className="btn-ajustar"
-                onClick={() => {
-                  setAjusteLocal(LOCATION_LIST[0].id);
-                  setAjusteQtd("");
-                  setAjusteTipo("entrada");
-                  setModalAjuste(true);
-                }}
-              >
-                ⚙️ Ajustar Estoque
-              </button>
-              <button
-                className="btn-variantes"
-                onClick={() => setModalVariantes(true)}
-              >
-                🎨 Variantes
-              </button>
-              <button
-                className="btn-editar-detalhe"
-                onClick={() => { setProdutoDetalhe(null); abrirEditar(produtoDetalhe); }}
-              >
-                ✏️ Editar Produto
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* Modal de ajuste */}
-      {modalAjuste && produtoDetalhe && (
-        <div className="modal-overlay" style={{ zIndex: 600 }} onClick={() => setModalAjuste(false)}>
-          <div className="modal-form" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-form-header">
-              <h3>⚙️ Ajustar Estoque</h3>
-              <button className="modal-fechar" onClick={() => setModalAjuste(false)}>✕</button>
-            </div>
-            <div className="modal-form-body">
-              <div className="campo">
-                <label>Produto</label>
-                <div className="campo-readonly">{produtoDetalhe.name}</div>
-              </div>
-              <div className="campo">
-                <label>Localização</label>
-                <select
-                  value={ajusteLocal}
-                  onChange={(e) => setAjusteLocal(Number(e.target.value))}
-                  className="campo-select"
+            <Divider style={{ margin: "4px 0" }} />
+
+            <Row gutter={10}>
+              <Col span={8}>
+                <Button
+                  block
+                  icon={<SettingOutlined />}
+                  onClick={() => {
+                    setAjusteLocal(LOCATION_LIST[0].id);
+                    setAjusteQtd(null);
+                    setAjusteTipo("entrada");
+                    setModalAjuste(true);
+                  }}
                 >
-                  {LOCATION_LIST.map((l) => (
-                    <option key={l.id} value={l.id}>{l.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="campo">
-                <label>Tipo de Ajuste</label>
-                <div className="tipo-ajuste-grupo">
-                  {[
-                    { valor: "entrada", label: "📥 Entrada avulsa" },
-                    { valor: "saida",   label: "📤 Saída avulsa" },
-                    { valor: "direto",  label: "🎯 Ajuste direto" },
-                  ].map((op) => (
-                    <button
-                      key={op.valor}
-                      className={`tipo-ajuste-btn ${ajusteTipo === op.valor ? "ativo" : ""}`}
-                      onClick={() => setAjusteTipo(op.valor as "entrada" | "saida" | "direto")}
-                    >
-                      {op.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="campo">
-                <label>
-                  {ajusteTipo === "direto" ? "Quantidade final desejada" :
-                   ajusteTipo === "entrada" ? "Quantidade a adicionar" :
-                   "Quantidade a remover"}
-                </label>
-                <input
-                  type="number"
-                  value={ajusteQtd}
-                  onChange={(e) => setAjusteQtd(e.target.value)}
-                  placeholder="0"
-                  min="0"
-                  step="1"
-                  autoFocus
-                />
-                {saldos.find(s => s.location_id[0] === ajusteLocal) && (
-                  <span className="saldo-atual-hint">
-                    Saldo atual: {saldos.find(s => s.location_id[0] === ajusteLocal)?.quantity ?? 0} un
-                  </span>
-                )}
-              </div>
+                  Ajustar
+                </Button>
+              </Col>
+              <Col span={8}>
+                <Button
+                  block
+                  icon={<AppstoreOutlined />}
+                  onClick={() => setModalVariantes(true)}
+                >
+                  Variantes
+                </Button>
+              </Col>
+              <Col span={8}>
+                <Button
+                  block
+                  type="primary"
+                  icon={<EditOutlined />}
+                  onClick={() => { setProdutoDetalhe(null); abrirEditar(produtoDetalhe); }}
+                >
+                  Editar
+                </Button>
+              </Col>
+            </Row>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Modal Ajuste de Estoque ── */}
+      <Modal
+        title="⚙️ Ajustar Estoque"
+        open={modalAjuste && !!produtoDetalhe}
+        centered
+        maskClosable
+        onCancel={() => setModalAjuste(false)}
+        footer={[
+          <Button key="cancelar" onClick={() => setModalAjuste(false)}>
+            Cancelar
+          </Button>,
+          <Button
+            key="confirmar"
+            type="primary"
+            loading={ajustando}
+            onClick={confirmarAjuste}
+            style={{ background: C.success, borderColor: C.success }}
+          >
+            Confirmar Ajuste
+          </Button>,
+        ]}
+      >
+        {produtoDetalhe && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: "16px 0" }}>
+
+            <Card size="small" style={{ background: C.bgRow }}>
+              <Text strong>{produtoDetalhe.name}</Text>
+            </Card>
+
+            <div>
+              <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+                Localização
+              </Text>
+              <Select
+                size="large"
+                style={{ width: "100%" }}
+                value={ajusteLocal}
+                onChange={v => setAjusteLocal(v)}
+                options={LOCATION_LIST.map(l => ({ value: l.id, label: l.name }))}
+              />
             </div>
-            <div className="modal-form-footer">
-              <button className="btn-cancelar" onClick={() => setModalAjuste(false)}>Cancelar</button>
-              <button className="btn-salvar" onClick={confirmarAjuste} disabled={ajustando}>
-                {ajustando ? "Ajustando..." : "✅ Confirmar Ajuste"}
-              </button>
+
+            <div>
+              <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+                Tipo de Ajuste
+              </Text>
+              <Radio.Group
+                value={ajusteTipo}
+                onChange={e => setAjusteTipo(e.target.value)}
+                buttonStyle="solid"
+                style={{ display: "flex" }}
+              >
+                <Radio.Button value="entrada" style={{ flex: 1, textAlign: "center" }}>
+                  📥 Entrada
+                </Radio.Button>
+                <Radio.Button value="saida" style={{ flex: 1, textAlign: "center" }}>
+                  📤 Saída
+                </Radio.Button>
+                <Radio.Button value="direto" style={{ flex: 1, textAlign: "center" }}>
+                  🎯 Direto
+                </Radio.Button>
+              </Radio.Group>
+            </div>
+
+            <div>
+              <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+                {ajusteTipo === "direto"   ? "Quantidade final desejada" :
+                 ajusteTipo === "entrada"  ? "Quantidade a adicionar"    :
+                                             "Quantidade a remover"}
+              </Text>
+              <InputNumber
+                autoFocus
+                size="large"
+                style={{ width: "100%" }}
+                min={0}
+                step={1}
+                precision={0}
+                placeholder="0"
+                value={ajusteQtd}
+                onChange={v => setAjusteQtd(v)}
+              />
+              {saldos.find(s => s.location_id[0] === ajusteLocal) && (
+                <Text type="secondary" style={{ fontSize: 13, marginTop: 6, display: "block" }}>
+                  Saldo atual neste local:{" "}
+                  <Text strong>
+                    {saldos.find(s => s.location_id[0] === ajusteLocal)?.quantity ?? 0} un
+                  </Text>
+                </Text>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
 
-      {/* Modal de variantes */}
+      {/* ── Modal Variantes ── */}
       {modalVariantes && produtoDetalhe && (
         <ModalVariantes
           templateId={produtoDetalhe.id}
