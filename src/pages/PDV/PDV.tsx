@@ -1,21 +1,60 @@
 import { useState, useRef, useEffect } from "react";
+import {
+  App,
+  Button,
+  Card,
+  Col,
+  Input,
+  Modal,
+  Radio,
+  Row,
+  Segmented,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+} from "antd";
+import {
+  BarcodeOutlined,
+  CheckCircleOutlined,
+  CloseOutlined,
+  DeleteOutlined,
+  LoadingOutlined,
+  PrinterOutlined,
+  UserOutlined,
+} from "@ant-design/icons";
 import { buscarPorBarcode, registrarVenda } from "../../services/odoo";
 import { Produto, ItemVenda, TipoVenda } from "../../types";
 import ModalProdutos from "../../components/ui/ModalProdutos";
 import ModalDesconto from "../../components/ui/ModalDesconto";
 import { emitirNFCe, FormaPagamento, buscarDanfeHtml } from "../../services/fiscal";
 import { usePDVShortcuts } from "../../hooks/usePDVShortcuts";
-import "./PDV.css";
+
+const { Text, Title } = Typography;
+
+// Tokens de cor inline — espelham src/theme.ts para consistência
+const C = {
+  amber:      "#F59E0B",
+  amberBg:    "#FFF8E7",
+  success:    "#22C55E",
+  error:      "#EF4444",
+  bgRow:      "#F8FAFC",
+  border:     "#E2E8F0",
+  textMuted:  "#64748B",
+} as const;
 
 export default function PDV() {
+  // ── App.useApp() substitui o estado [mensagem] + setTimeout manual ──────────
+  const { message, modal } = App.useApp();
+
+  // ── Estados (idênticos ao original) ─────────────────────────────────────────
   const [tipoVenda, setTipoVenda]             = useState<TipoVenda>("recibo");
   const [carrinho, setCarrinho]               = useState<ItemVenda[]>([]);
   const [desconto, setDesconto]               = useState(0);
-  const [ultimoDesconto, setUltimoDesconto] = useState(0);
+  const [ultimoDesconto, setUltimoDesconto]   = useState(0);
   const [barcodeBuffer, setBarcodeBuffer]     = useState("");
   const [buscando, setBuscando]               = useState(false);
   const [finalizando, setFinalizando]         = useState(false);
-  const [mensagem, setMensagem]               = useState<{ tipo: "sucesso" | "erro" | "aviso"; texto: string } | null>(null);
   const [modalAberto, setModalAberto]         = useState(false);
   const [modalPagamento, setModalPagamento]   = useState(false);
   const [modalCliente, setModalCliente]       = useState(false);
@@ -35,15 +74,22 @@ export default function PDV() {
     modalDesconto  ||
     !!resultadoNFCe;
 
+  // ── Helper refocus ───────────────────────────────────────────────────────────
+  function refocusInput() {
+    inputRef.current?.focus();
+  }
+
+  // ── Abrir modal de pagamento ─────────────────────────────────────────────────
   function abrirModalPagamento(formaInicial: FormaPagamento = "dinheiro") {
     if (carrinho.length === 0) {
-      exibirMensagem("erro", "Carrinho vazio.");
+      message.error("Carrinho vazio.");
       return;
     }
     setFormaPagamento(formaInicial);
     setModalPagamento(true);
   }
 
+  // ── Atalhos de teclado (lógica preservada — hook intocável) ─────────────────
   usePDVShortcuts(
     {
       onF1:  () => setModalAberto(true),
@@ -55,26 +101,33 @@ export default function PDV() {
     algumModalAberto,
   );
 
+  // ── Refocus automático no input de barcode ───────────────────────────────────
+  // Pausa enquanto qualquer modal estiver aberto para não roubar o foco dos inputs
   useEffect(() => {
-    const refocus = () => inputRef.current?.focus();
+    const refocus = () => {
+      if (!algumModalAberto) inputRef.current?.focus();
+    };
     document.addEventListener("click", refocus);
-    refocus();
+    if (!algumModalAberto) inputRef.current?.focus();
     return () => document.removeEventListener("click", refocus);
-  }, []);
+  }, [algumModalAberto]);
+
+  // ── Feedback visual (substitui estado [mensagem] + div manual) ───────────────
+  function exibirMensagem(tipo: "sucesso" | "erro" | "aviso", texto: string) {
+    if (tipo === "sucesso") message.success(texto);
+    else if (tipo === "erro") message.error(texto);
+    else message.warning(texto);
+  }
+
+  // ── Lógica de negócio (100% preservada) ────────────────────────────────────
 
   function selecionarProdutoModal(produto: Produto) {
     adicionarAoCarrinho(produto);
   }
 
-  function exibirMensagem(tipo: "sucesso" | "erro" | "aviso", texto: string) {
-    setMensagem({ tipo, texto });
-    setTimeout(() => setMensagem(null), 3000);
-  }
-
-  // ── helper: zera desconto e avisa o operador ──────────────────────────────
   function limparDesconto() {
     setDesconto(0);
-    exibirMensagem("aviso", "⚠️ Desconto removido. Reaplicar com F3.");
+    exibirMensagem("aviso", "Desconto removido. Reaplicar com F3.");
   }
 
   async function processarBarcode(barcode: string) {
@@ -105,15 +158,12 @@ export default function PDV() {
   }
 
   function adicionarAoCarrinho(produto: Produto) {
-    // captura antes de qualquer setState para a condição ser confiável
     const temDesconto = desconto > 0;
-
     if (temDesconto) {
       limparDesconto();
     } else {
-      exibirMensagem("sucesso", `✅ ${produto.name} adicionado`);
+      exibirMensagem("sucesso", `${produto.name} adicionado`);
     }
-
     setCarrinho((prev) => {
       const existente = prev.find((i) => i.produto.id === produto.id);
       if (existente) {
@@ -152,6 +202,20 @@ export default function PDV() {
   function cancelarVenda() {
     setCarrinho([]);
     setDesconto(0);
+  }
+
+  // Modal.confirm substitui o clique direto — confirmação antes de destruir o carrinho
+  function confirmarCancelamento() {
+    modal.confirm({
+      title: "Cancelar venda?",
+      content: "Todos os itens do carrinho serão removidos.",
+      okText: "Cancelar Venda",
+      okButtonProps: { danger: true },
+      cancelText: "Voltar",
+      onOk: cancelarVenda,
+      centered: true,
+      maskClosable: true,
+    });
   }
 
   async function finalizarVenda() {
@@ -206,9 +270,9 @@ export default function PDV() {
         }
 
         setResultadoNFCe({ danfeUrl: resultado.danfeUrl, chave: resultado.chave });
-        exibirMensagem("sucesso", "✅ NFC-e autorizada com sucesso!");
+        exibirMensagem("sucesso", "NFC-e autorizada com sucesso!");
       } else {
-        exibirMensagem("sucesso", "✅ Venda finalizada!");
+        exibirMensagem("sucesso", "Venda finalizada!");
       }
 
       setCarrinho([]);
@@ -226,316 +290,465 @@ export default function PDV() {
   const totalBruto = calcularTotalBruto();
   const total      = calcularTotal();
 
+  // ── JSX ─────────────────────────────────────────────────────────────────────
   return (
-    <div className="pdv-container">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 20, position: "relative" }}>
 
+      {/* Input invisível — captura barcode do leitor USB HID */}
       <input
         ref={inputRef}
-        className="barcode-input"
+        style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 1, height: 1 }}
         value={barcodeBuffer}
         onChange={(e) => setBarcodeBuffer(e.target.value)}
         onKeyDown={handleKeyDown}
         readOnly={buscando}
       />
 
-      {mensagem && (
-        <div className={`mensagem mensagem-${mensagem.tipo}`}>
-          {mensagem.texto}
-        </div>
-      )}
+      {/* ── Header ── */}
+      <Row justify="space-between" align="middle">
+        <Col>
+          <Title level={3} style={{ margin: 0 }}>PDV — Balcão</Title>
+        </Col>
+        <Col>
+          <Segmented
+            value={tipoVenda}
+            onChange={(v) => setTipoVenda(v as TipoVenda)}
+            size="large"
+            options={[
+              { label: "🧾 Recibo", value: "recibo" },
+              { label: "📄 NFC-e",  value: "nfce"   },
+            ]}
+          />
+        </Col>
+      </Row>
 
-      <div className="pdv-header">
-        <h2>PDV — Balcão</h2>
-        <div className="tipo-venda-toggle">
-          <button
-            className={tipoVenda === "recibo" ? "toggle-btn active" : "toggle-btn"}
-            onClick={() => setTipoVenda("recibo")}
+      {/* ── Body: Scanner + Carrinho ── */}
+      <Row gutter={20} style={{ flex: 1, minHeight: 0 }}>
+
+        {/* Scanner */}
+        <Col span={10} style={{ display: "flex" }}>
+          <Card
+            style={{ width: "100%" }}
+            styles={{ body: { height: "100%", display: "flex", alignItems: "center", justifyContent: "center" } }}
           >
-            🧾 Recibo
-          </button>
-          <button
-            className={tipoVenda === "nfce" ? "toggle-btn active nfce" : "toggle-btn"}
-            onClick={() => setTipoVenda("nfce")}
-          >
-            📄 NFC-e
-          </button>
-        </div>
-      </div>
-
-      <div className="pdv-body">
-
-        <div className="pdv-scanner">
-          {buscando ? (
-            <div className="scanner-buscando">
-              <div className="spinner" />
-              <p>Buscando produto...</p>
-            </div>
-          ) : (
-            <div className="scanner-idle">
-              <div className="scanner-icon">▐▌</div>
-              <p>Bipe o produto ou</p>
-              <p>digite o código de barras</p>
-              <p className="scanner-hint">e pressione Enter</p>
-              <div className="barcode-display">
-                {barcodeBuffer || <span className="placeholder">aguardando...</span>}
+            {buscando ? (
+              <Spin
+                indicator={<LoadingOutlined style={{ fontSize: 40 }} spin />}
+                tip="Buscando produto..."
+              />
+            ) : (
+              <div style={{ textAlign: "center" }}>
+                <BarcodeOutlined style={{ fontSize: 64, color: C.amber, display: "block", marginBottom: 16 }} />
+                <Text style={{ display: "block", fontSize: 16 }}>Bipe o produto ou</Text>
+                <Text style={{ display: "block", fontSize: 16 }}>digite o código de barras</Text>
+                <Text type="secondary" style={{ display: "block", fontSize: 13, marginTop: 8 }}>
+                  e pressione Enter
+                </Text>
+                <div style={{
+                  marginTop: 20,
+                  background: C.bgRow,
+                  border: `2px dashed ${C.border}`,
+                  borderRadius: 10,
+                  padding: "12px 24px",
+                  fontFamily: "monospace",
+                  fontSize: 18,
+                  minWidth: 200,
+                  color: barcodeBuffer ? "#1A1A1A" : C.border,
+                }}>
+                  {barcodeBuffer || "aguardando..."}
+                </div>
               </div>
-            </div>
-          )}
-        </div>
-
-        <div className="pdv-carrinho">
-          <h3>Carrinho</h3>
-
-          {carrinho.length === 0 ? (
-            <div className="carrinho-vazio">Nenhum item adicionado</div>
-          ) : (
-            <div className="carrinho-itens">
-              {carrinho.map((item) => (
-                <div key={item.produto.id} className="carrinho-item">
-                  <div className="item-nome">{item.produto.name}</div>
-                  <div className="item-controles">
-                    <button onClick={() => alterarQuantidade(item.produto.id, -1)}>−</button>
-                    <span>{item.quantidade}</span>
-                    <button onClick={() => alterarQuantidade(item.produto.id, +1)}>+</button>
-                  </div>
-                  <div className="item-preco">
-                    R$ {(item.preco_unitario * item.quantidade).toFixed(2)}
-                  </div>
-                  <button
-                    className="item-remover"
-                    onClick={() => removerItem(item.produto.id)}
-                  >✕</button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="carrinho-footer">
-            {desconto > 0 && (
-              <>
-                <div className="carrinho-total" style={{ color: "#94a3b8", fontSize: "0.9rem" }}>
-                  <span>Subtotal</span>
-                  <span>R$ {totalBruto.toFixed(2)}</span>
-                </div>
-                <div className="carrinho-total" style={{ color: "#f87171" }}>
-                  <span>🏷️ Desconto</span>
-                  <span>− R$ {desconto.toFixed(2)}</span>
-                </div>
-              </>
             )}
-            <div className="carrinho-total">
-              <span>Total</span>
-              <span>R$ {total.toFixed(2)}</span>
-            </div>
-            <button
-              className="btn-finalizar"
-              onClick={finalizarVenda}
-              disabled={finalizando || carrinho.length === 0}
-            >
-              {finalizando ? "Processando..." : "✅ Finalizar Venda"}
-            </button>
-            {carrinho.length > 0 && (
-              <button
-                className="btn-cancelar"
-                onClick={cancelarVenda}
-                disabled={finalizando}
+          </Card>
+        </Col>
+
+        {/* Carrinho */}
+        <Col span={14} style={{ display: "flex" }}>
+          <Card
+            title={<Text strong style={{ fontSize: 18 }}>Carrinho</Text>}
+            style={{ width: "100%", display: "flex", flexDirection: "column" }}
+            styles={{ body: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "12px 24px" } }}
+          >
+            {/* Lista de itens */}
+            {carrinho.length === 0 ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Text type="secondary" style={{ fontSize: 15 }}>Nenhum item adicionado</Text>
+              </div>
+            ) : (
+              <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+                {carrinho.map((item) => (
+                  <div
+                    key={item.produto.id}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 12,
+                      padding: 12, background: C.bgRow, borderRadius: 10,
+                    }}
+                  >
+                    <Text style={{ flex: 1, fontSize: 14, fontWeight: 500 }}>
+                      {item.produto.name}
+                    </Text>
+                    <Space size={8}>
+                      <Button
+                        size="small"
+                        onClick={() => alterarQuantidade(item.produto.id, -1)}
+                      >
+                        −
+                      </Button>
+                      <Text strong style={{ minWidth: 24, textAlign: "center", display: "inline-block" }}>
+                        {item.quantidade}
+                      </Text>
+                      <Button
+                        size="small"
+                        onClick={() => alterarQuantidade(item.produto.id, +1)}
+                      >
+                        +
+                      </Button>
+                    </Space>
+                    <Text strong style={{ minWidth: 80, textAlign: "right", fontSize: 14 }}>
+                      R$ {(item.preco_unitario * item.quantidade).toFixed(2)}
+                    </Text>
+                    <Button
+                      type="text"
+                      danger
+                      size="small"
+                      icon={<CloseOutlined />}
+                      onClick={() => removerItem(item.produto.id)}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Footer do carrinho */}
+            <div style={{ borderTop: `2px solid ${C.border}`, paddingTop: 16, marginTop: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+              {desconto > 0 && (
+                <>
+                  <Row justify="space-between">
+                    <Text type="secondary">Subtotal</Text>
+                    <Text type="secondary">R$ {totalBruto.toFixed(2)}</Text>
+                  </Row>
+                  <Row justify="space-between">
+                    <Text style={{ color: C.error }}>🏷️ Desconto</Text>
+                    <Text style={{ color: C.error }}>− R$ {desconto.toFixed(2)}</Text>
+                  </Row>
+                </>
+              )}
+              <Row justify="space-between" align="middle">
+                <Text strong style={{ fontSize: 20 }}>Total</Text>
+                <Text strong style={{ fontSize: 20 }}>R$ {total.toFixed(2)}</Text>
+              </Row>
+
+              <Button
+                type="primary"
+                block
+                size="large"
+                icon={<CheckCircleOutlined />}
+                onClick={finalizarVenda}
+                disabled={carrinho.length === 0}
+                loading={finalizando}
+                style={
+                  carrinho.length > 0
+                    ? { background: C.success, borderColor: C.success }
+                    : {}
+                }
               >
-                🗑️ Cancelar Venda
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+                {finalizando ? "Processando..." : "Finalizar Venda"}
+              </Button>
 
-      <div className="f1-hint">
-        <span><kbd>F1</kbd> Produtos</span>
-        <span><kbd>F2</kbd> Recibo/NFC-e</span>
-        <span><kbd>F3</kbd> Desconto</span>
-        <span><kbd>F4</kbd> Finalizar</span>
-        <span><kbd>Alt</kbd> Finalizar Débito</span>
-        <span><kbd>B</kbd> Cliente</span>
-      </div>
+              {carrinho.length > 0 && (
+                <Button
+                  block
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={confirmarCancelamento}
+                  disabled={finalizando}
+                >
+                  Cancelar Venda
+                </Button>
+              )}
+            </div>
+          </Card>
+        </Col>
+      </Row>
 
+      {/* ── Hints de atalho (rodapé fixo) ── */}
+      <Space
+        size={12}
+        wrap
+        style={{ position: "fixed", bottom: 16, right: 24 }}
+      >
+        {(
+          [
+            ["F1", "Produtos"],
+            ["F2", "Recibo/NFC-e"],
+            ["F3", "Desconto"],
+            ["F4", "Finalizar"],
+            ["Alt", "Finalizar Débito"],
+            ["B", "Cliente"],
+          ] as [string, string][]
+        ).map(([key, label]) => (
+          <Space key={key} size={4}>
+            <Tag style={{ fontFamily: "monospace", margin: 0 }}>{key}</Tag>
+            <Text type="secondary" style={{ fontSize: 12 }}>{label}</Text>
+          </Space>
+        ))}
+      </Space>
+
+      {/* ── Modal Produtos (F1) ── */}
       <ModalProdutos
         aberto={modalAberto}
-        onFechar={() => { setModalAberto(false); inputRef.current?.focus(); }}
+        onFechar={() => { setModalAberto(false); refocusInput(); }}
         onSelecionar={selecionarProdutoModal}
       />
 
-      {modalCliente && (
-        <div className="modal-overlay" onClick={() => { setModalCliente(false); inputRef.current?.focus(); }}>
-          <div className="modal-pagamento" onClick={e => e.stopPropagation()}>
-            <div className="modal-pag-header">
-              <h3>👤 Identificar Cliente</h3>
-              <button className="modal-fechar" onClick={() => { setModalCliente(false); inputRef.current?.focus(); }}>✕</button>
-            </div>
-            <div className="modal-pag-body">
-              <div className="pag-section">
-                <label>CPF / CNPJ</label>
-                <input
-                  autoFocus
-                  type="text"
-                  value={cpfCnpj}
-                  onChange={e => setCpfCnpj(e.target.value)}
-                  placeholder="000.000.000-00 ou 00.000.000/0001-00"
-                  maxLength={18}
-                  onKeyDown={e => {
-                    if (e.key === "Enter" || e.key === "Escape") {
-                      setModalCliente(false);
-                      inputRef.current?.focus();
-                    }
-                  }}
-                />
-              </div>
-            </div>
-            <div className="modal-pag-footer">
-              <button className="btn-cancelar-pag" onClick={() => { setCpfCnpj(""); setModalCliente(false); inputRef.current?.focus(); }}>
-                Limpar
-              </button>
-              <button className="btn-emitir-nfce" onClick={() => { setModalCliente(false); inputRef.current?.focus(); }}>
-                ✅ Confirmar
-              </button>
-            </div>
-          </div>
+      {/* ── Modal Cliente (B) ── */}
+      <Modal
+        title="👤 Identificar Cliente"
+        open={modalCliente}
+        centered
+        maskClosable
+        onCancel={() => { setModalCliente(false); refocusInput(); }}
+        footer={[
+          <Button
+            key="limpar"
+            onClick={() => { setCpfCnpj(""); setModalCliente(false); refocusInput(); }}
+          >
+            Limpar
+          </Button>,
+          <Button
+            key="confirmar"
+            type="primary"
+            onClick={() => { setModalCliente(false); refocusInput(); }}
+          >
+            Confirmar
+          </Button>,
+        ]}
+      >
+        <div style={{ padding: "16px 0" }}>
+          <Text
+            type="secondary"
+            style={{ display: "block", marginBottom: 8, fontWeight: 600 }}
+          >
+            CPF / CNPJ
+          </Text>
+          <Input
+            autoFocus
+            prefix={<UserOutlined />}
+            size="large"
+            value={cpfCnpj}
+            onChange={e => setCpfCnpj(e.target.value)}
+            placeholder="000.000.000-00 ou 00.000.000/0001-00"
+            maxLength={18}
+            onKeyDown={e => {
+              if (e.key === "Enter" || e.key === "Escape") {
+                setModalCliente(false);
+                refocusInput();
+              }
+            }}
+          />
         </div>
-      )}
+      </Modal>
 
+      {/* ── Modal Desconto (F3) — lógica crítica preservada no componente original ── */}
       <ModalDesconto
-      isOpen={modalDesconto}
-      totalBruto={totalBruto}
-      ultimoDesconto={ultimoDesconto}
-      onConfirmar={(valor) => { setDesconto(valor); setUltimoDesconto(valor); }}
-      onFechar={() => { setModalDesconto(false); inputRef.current?.focus(); }}
+        isOpen={modalDesconto}
+        totalBruto={totalBruto}
+        ultimoDesconto={ultimoDesconto}
+        onConfirmar={(valor) => { setDesconto(valor); setUltimoDesconto(valor); }}
+        onFechar={() => { setModalDesconto(false); refocusInput(); }}
       />
 
-      {modalPagamento && (
-        <div className="modal-overlay" onClick={() => setModalPagamento(false)}>
-          <div className="modal-pagamento" onClick={e => e.stopPropagation()}>
-            <div className="modal-pag-header">
-              <h3>💳 Finalizar com NFC-e</h3>
-              <button className="modal-fechar" onClick={() => setModalPagamento(false)}>✕</button>
-            </div>
+      {/* ── Modal Pagamento / NFC-e ── */}
+      <Modal
+        title="💳 Finalizar com NFC-e"
+        open={modalPagamento}
+        centered
+        maskClosable={false}
+        onCancel={() => setModalPagamento(false)}
+        footer={[
+          <Button key="cancelar" onClick={() => setModalPagamento(false)}>
+            Cancelar
+          </Button>,
+          <Button
+            key="emitir"
+            type="primary"
+            onClick={processarVenda}
+            disabled={finalizando || emitindoNFCe}
+            loading={finalizando || emitindoNFCe}
+          >
+            {emitindoNFCe ? "Autorizando..." : finalizando ? "Processando..." : "Emitir NFC-e"}
+          </Button>,
+        ]}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 20, padding: "16px 0" }}>
 
-            <div className="modal-pag-body">
-              <div className="pag-total">
-                <span>Total</span>
-                <strong>R$ {calcularTotal().toFixed(2)}</strong>
-              </div>
+          {/* Total em destaque */}
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "14px 18px", background: C.amberBg, borderRadius: 12,
+          }}>
+            <Text style={{ fontSize: 15 }}>Total</Text>
+            <Text strong style={{ fontSize: 22, color: C.amber }}>
+              R$ {calcularTotal().toFixed(2)}
+            </Text>
+          </div>
 
-              <div className="pag-section">
-                <label>Forma de Pagamento</label>
-                <div className="pag-formas">
-                  {[
-                    { valor: "dinheiro", label: "💵 Dinheiro" },
-                    { valor: "debito",   label: "💳 Débito"   },
-                    { valor: "credito",  label: "💳 Crédito"  },
-                    { valor: "pix",      label: "📱 Pix"      },
-                  ].map(f => (
-                    <button
-                      key={f.valor}
-                      className={`pag-forma-btn ${formaPagamento === f.valor ? "ativo" : ""}`}
-                      onClick={() => setFormaPagamento(f.valor as FormaPagamento)}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+          {/* Forma de pagamento */}
+          <div>
+            <Text
+              type="secondary"
+              style={{ display: "block", marginBottom: 8, fontWeight: 600, fontSize: 13 }}
+            >
+              Forma de Pagamento
+            </Text>
+            <Radio.Group
+              value={formaPagamento}
+              onChange={e => setFormaPagamento(e.target.value)}
+              buttonStyle="solid"
+              style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, width: "100%" }}
+            >
+              {(
+                [
+                  { valor: "dinheiro", label: "💵 Dinheiro" },
+                  { valor: "debito",   label: "💳 Débito"   },
+                  { valor: "credito",  label: "💳 Crédito"  },
+                  { valor: "pix",      label: "📱 Pix"      },
+                ] as { valor: FormaPagamento; label: string }[]
+              ).map(f => (
+                <Radio.Button
+                  key={f.valor}
+                  value={f.valor}
+                  style={{ textAlign: "center", height: 52, lineHeight: "52px" }}
+                >
+                  {f.label}
+                </Radio.Button>
+              ))}
+            </Radio.Group>
+          </div>
 
-              <div className="pag-section">
-                <label>CPF/CNPJ na nota (opcional)</label>
-                <input
-                  autoFocus
-                  type="text"
-                  value={cpfCnpj}
-                  onChange={e => setCpfCnpj(e.target.value)}
-                  placeholder="000.000.000-00 ou 00.000.000/0001-00"
-                  maxLength={18}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") processarVenda();
-                    if (e.key === "Escape") setModalPagamento(false);
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="modal-pag-footer">
-              <button className="btn-cancelar-pag" onClick={() => setModalPagamento(false)}>
-                Cancelar
-              </button>
-              <button
-                className="btn-emitir-nfce"
-                onClick={processarVenda}
-                disabled={finalizando || emitindoNFCe}
-              >
-                {emitindoNFCe ? "⏳ Autorizando..." :
-                 finalizando  ? "Processando..."   :
-                 "✅ Emitir NFC-e"}
-              </button>
-            </div>
+          {/* CPF/CNPJ na nota */}
+          <div>
+            <Text
+              type="secondary"
+              style={{ display: "block", marginBottom: 8, fontWeight: 600, fontSize: 13 }}
+            >
+              CPF/CNPJ na nota (opcional)
+            </Text>
+            <Input
+              autoFocus
+              prefix={<UserOutlined />}
+              size="large"
+              value={cpfCnpj}
+              onChange={e => setCpfCnpj(e.target.value)}
+              placeholder="000.000.000-00 ou 00.000.000/0001-00"
+              maxLength={18}
+              onKeyDown={e => {
+                if (e.key === "Enter") processarVenda();
+                if (e.key === "Escape") setModalPagamento(false);
+              }}
+            />
           </div>
         </div>
-      )}
+      </Modal>
 
-      {resultadoNFCe && (
-        <div className="modal-overlay" onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}>
-          <div className={`modal-danfe ${danfeHtml ? "modal-danfe-expanded" : ""}`} onClick={e => e.stopPropagation()}>
-            <div className="modal-pag-header">
-              <h3>✅ NFC-e Autorizada</h3>
-              <button className="modal-fechar" onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}>✕</button>
-            </div>
-            <div className="modal-pag-body">
-              <div className="danfe-chave">
-                <span>Chave de acesso</span>
-                <code>{resultadoNFCe.chave}</code>
-              </div>
-              {resultadoNFCe.danfeUrl && !danfeHtml && (
-                <button
-                  className="btn-danfe"
-                  disabled={carregandoDanfe}
-                  onClick={async () => {
-                    setCarregandoDanfe(true);
-                    try {
-                      const html = await buscarDanfeHtml(resultadoNFCe.danfeUrl!);
-                      setDanfeHtml(html);
-                    } catch (error) {
-                      console.error("Erro ao carregar DANFE:", error);
-                      alert("Erro ao carregar DANFE");
-                    } finally {
-                      setCarregandoDanfe(false);
-                    }
-                  }}
-                >
-                  {carregandoDanfe ? "Carregando..." : "🖨️ Visualizar DANFE"}
-                </button>
-              )}
-              {danfeHtml && (
-                <iframe
-                  srcDoc={danfeHtml}
-                  className="danfe-iframe"
-                  title="DANFE"
-                />
-              )}
-            </div>
-            <div className="modal-pag-footer">
-              {danfeHtml && (
-                <button
-                  className="btn-danfe"
+      {/* ── Modal DANFE ── */}
+      <Modal
+        title="✅ NFC-e Autorizada"
+        open={!!resultadoNFCe}
+        centered
+        maskClosable
+        width={danfeHtml ? "min(90vw, 450px)" : 460}
+        onCancel={() => { setResultadoNFCe(null); setDanfeHtml(null); }}
+        styles={danfeHtml ? { body: { height: "65vh", display: "flex", flexDirection: "column" } } : undefined}
+        footer={
+          danfeHtml
+            ? [
+                <Button
+                  key="imprimir"
+                  type="primary"
+                  icon={<PrinterOutlined />}
+                  style={{ background: C.success, borderColor: C.success }}
                   onClick={() => {
                     const iframe = document.querySelector(".danfe-iframe") as HTMLIFrameElement;
                     iframe?.contentWindow?.print();
                   }}
                 >
-                  🖨️ Imprimir
-                </button>
-              )}
-              <button className="btn-emitir-nfce" onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}>
-                Fechar
-              </button>
-            </div>
+                  Imprimir
+                </Button>,
+                <Button
+                  key="fechar"
+                  onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}
+                >
+                  Fechar
+                </Button>,
+              ]
+            : [
+                <Button
+                  key="fechar"
+                  type="primary"
+                  onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}
+                >
+                  Fechar
+                </Button>,
+              ]
+        }
+      >
+        <div style={{
+          display: "flex", flexDirection: "column", gap: 16, padding: "16px 0",
+          ...(danfeHtml ? { flex: 1 } : {}),
+        }}>
+          {/* Chave de acesso */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <Text type="secondary" style={{ fontWeight: 600, fontSize: 13 }}>
+              Chave de acesso
+            </Text>
+            <code style={{
+              fontFamily: "monospace", fontSize: 12,
+              background: C.bgRow, padding: 10, borderRadius: 8,
+              wordBreak: "break-all", color: "#1A1A1A", display: "block",
+            }}>
+              {resultadoNFCe?.chave}
+            </code>
           </div>
+
+          {/* Botão visualizar DANFE */}
+          {resultadoNFCe?.danfeUrl && !danfeHtml && (
+            <Button
+              type="primary"
+              block
+              size="large"
+              icon={<PrinterOutlined />}
+              loading={carregandoDanfe}
+              style={{ background: C.success, borderColor: C.success }}
+              onClick={async () => {
+                setCarregandoDanfe(true);
+                try {
+                  const html = await buscarDanfeHtml(resultadoNFCe.danfeUrl!);
+                  setDanfeHtml(html);
+                } catch (error) {
+                  console.error("Erro ao carregar DANFE:", error);
+                  message.error("Erro ao carregar DANFE");
+                } finally {
+                  setCarregandoDanfe(false);
+                }
+              }}
+            >
+              {carregandoDanfe ? "Carregando..." : "Visualizar DANFE"}
+            </Button>
+          )}
+
+          {/* iframe do DANFE */}
+          {danfeHtml && (
+            <iframe
+              srcDoc={danfeHtml}
+              className="danfe-iframe"
+              title="DANFE"
+              style={{ flex: 1, width: "100%", border: "none", borderRadius: 8, background: "white", marginTop: 12 }}
+            />
+          )}
         </div>
-      )}
+      </Modal>
+
     </div>
   );
 }

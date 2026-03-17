@@ -1,4 +1,22 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
+import {
+  Alert,
+  Button,
+  Divider,
+  InputNumber,
+  Modal,
+  Row,
+  Typography,
+} from "antd";
+
+const { Text } = Typography;
+
+const C = {
+  amber:   "#F59E0B",
+  amberBg: "#FFF8E7",
+  error:   "#EF4444",
+  success: "#22C55E",
+} as const;
 
 interface ModalDescontoProps {
   isOpen:          boolean;
@@ -15,159 +33,178 @@ export default function ModalDesconto({
   onConfirmar,
   onFechar,
 }: ModalDescontoProps) {
-  const [valorStr, setValorStr]     = useState("");
-  const [percentStr, setPercentStr] = useState("");
-  const inputValorRef               = useRef<HTMLInputElement>(null);
+  const [valorReais,   setValorReais]   = useState<number | null>(null);
+  const [valorPercent, setValorPercent] = useState<number | null>(null);
 
+  // ── Pré-preenche com último desconto ao abrir ────────────────────────────
   useEffect(() => {
     if (isOpen) {
       if (ultimoDesconto > 0) {
-        const valorFmt = ultimoDesconto.toFixed(2).replace(".", ",");
-        const pctFmt   = totalBruto > 0
-          ? ((ultimoDesconto / totalBruto) * 100).toFixed(2)
-          : "";
-        setValorStr(valorFmt);
-        setPercentStr(pctFmt);
+        setValorReais(parseFloat(ultimoDesconto.toFixed(2)));
+        setValorPercent(
+          totalBruto > 0
+            ? parseFloat(((ultimoDesconto / totalBruto) * 100).toFixed(2))
+            : null
+        );
       } else {
-        setValorStr("");
-        setPercentStr("");
+        setValorReais(null);
+        setValorPercent(null);
       }
-      setTimeout(() => inputValorRef.current?.focus(), 50);
     }
   }, [isOpen, ultimoDesconto, totalBruto]);
 
-  // ── sincronização entre os dois campos ───────────────────────────────────
-  function handleValorChange(raw: string) {
-    const sanitized = raw.replace(/[^\d.,]/g, "").replace(",", ".");
-    setValorStr(raw.replace(/[^\d.,]/g, ""));
-
-    const valor = parseFloat(sanitized);
-    if (!isNaN(valor) && totalBruto > 0) {
-      const pct = (valor / totalBruto) * 100;
-      setPercentStr(pct > 0 ? pct.toFixed(2) : "");
+  // ── Sincronização bidirecional ───────────────────────────────────────────
+  function handleValorChange(val: number | null) {
+    setValorReais(val);
+    if (val !== null && totalBruto > 0) {
+      setValorPercent(parseFloat(((val / totalBruto) * 100).toFixed(2)));
     } else {
-      setPercentStr("");
+      setValorPercent(null);
     }
   }
 
-  function handlePercentChange(raw: string) {
-    const sanitized = raw.replace(/[^\d.,]/g, "").replace(",", ".");
-    setPercentStr(raw.replace(/[^\d.,]/g, ""));
-
-    const pct = parseFloat(sanitized);
-    if (!isNaN(pct) && totalBruto > 0) {
-      const valor = (pct / 100) * totalBruto;
-      setValorStr(valor > 0 ? valor.toFixed(2).replace(".", ",") : "");
+  function handlePercentChange(pct: number | null) {
+    setValorPercent(pct);
+    if (pct !== null && totalBruto > 0) {
+      setValorReais(parseFloat(((pct / 100) * totalBruto).toFixed(2)));
     } else {
-      setValorStr("");
+      setValorReais(null);
     }
   }
 
-  // ── valores derivados para preview ───────────────────────────────────────
-  const descontoValor    = parseFloat(valorStr.replace(",", ".")) || 0;
-  const descontoPct      = parseFloat(percentStr.replace(",", ".")) || 0;
+  // ── Valores derivados para preview ──────────────────────────────────────
+  const descontoValor    = valorReais ?? 0;
+  const descontoPct      = valorPercent ?? 0;
   const totalComDesconto = Math.max(0, totalBruto - descontoValor);
   const descontoInvalido = descontoValor < 0 || descontoValor > totalBruto;
+  const podePodConfirmar = descontoValor > 0 && !descontoInvalido;
 
   function confirmar() {
-    if (descontoInvalido) return;
+    if (!podePodConfirmar) return;
     onConfirmar(descontoValor);
     onFechar();
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter")  confirmar();
-    if (e.key === "Escape") onFechar();
-  }
-
-  if (!isOpen) return null;
-
   return (
-    <div className="modal-overlay" onClick={onFechar}>
+    <Modal
+      title="🏷️ Aplicar Desconto"
+      open={isOpen}
+      centered
+      maskClosable
+      onCancel={onFechar}
+      keyboard        // Escape fecha
+      footer={[
+        <Button key="cancelar" onClick={onFechar}>
+          Cancelar
+        </Button>,
+        <Button
+          key="confirmar"
+          type="primary"
+          disabled={!podePodConfirmar}
+          onClick={confirmar}
+          style={podePodConfirmar ? { background: C.success, borderColor: C.success } : {}}
+        >
+          Aplicar Desconto
+        </Button>,
+      ]}
+    >
       <div
-        className="modal-pagamento"
-        onClick={e => e.stopPropagation()}
-        onKeyDown={handleKeyDown}
+        style={{ display: "flex", flexDirection: "column", gap: 16, padding: "16px 0" }}
+        onKeyDown={e => { if (e.key === "Enter") confirmar(); }}
       >
-        {/* header */}
-        <div className="modal-pag-header">
-          <h3>🏷️ Aplicar Desconto</h3>
-          <button className="modal-fechar" onClick={onFechar}>✕</button>
+
+        {/* Total do pedido */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "14px 18px", background: C.amberBg, borderRadius: 12,
+        }}>
+          <Text style={{ fontSize: 15 }}>Total do pedido</Text>
+          <Text strong style={{ fontSize: 22, color: C.amber }}>
+            R$ {totalBruto.toFixed(2)}
+          </Text>
         </div>
 
-        <div className="modal-pag-body">
-
-          {/* total bruto */}
-          <div className="pag-total">
-            <span>Total do pedido</span>
-            <strong>R$ {totalBruto.toFixed(2)}</strong>
-          </div>
-
-          {/* campo valor R$ */}
-          <div className="pag-section">
-            <label>Desconto em R$</label>
-            <input
-              ref={inputValorRef}
-              type="text"
-              inputMode="decimal"
-              placeholder="0,00"
-              value={valorStr}
-              onChange={e => handleValorChange(e.target.value)}
-            />
-          </div>
-
-          {/* campo percentual */}
-          <div className="pag-section">
-            <label>Desconto em %</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="0,00"
-              value={percentStr}
-              onChange={e => handlePercentChange(e.target.value)}
-            />
-          </div>
-
-          {/* preview */}
-          {descontoValor > 0 && (
-            <div className="desconto-preview">
-              {descontoInvalido ? (
-                <span className="desconto-erro">
-                  ⚠️ Desconto maior que o total
-                </span>
-              ) : (
-                <>
-                  <div className="desconto-linha">
-                    <span>Desconto</span>
-                    <span className="desconto-valor-destaque">
-                      − R$ {descontoValor.toFixed(2)}
-                      <small> ({descontoPct.toFixed(1)}%)</small>
-                    </span>
-                  </div>
-                  <div className="desconto-linha desconto-total-final">
-                    <span>Total com desconto</span>
-                    <strong>R$ {totalComDesconto.toFixed(2)}</strong>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* footer */}
-        <div className="modal-pag-footer">
-          <button className="btn-cancelar-pag" onClick={onFechar}>
-            Cancelar
-          </button>
-          <button
-            className="btn-emitir-nfce"
-            onClick={confirmar}
-            disabled={descontoInvalido || descontoValor === 0}
+        {/* Campo R$ */}
+        <div>
+          <Text
+            type="secondary"
+            style={{ display: "block", fontWeight: 600, fontSize: 13, marginBottom: 8 }}
           >
-            ✅ Aplicar Desconto
-          </button>
+            Desconto em R$
+          </Text>
+          <InputNumber
+            autoFocus
+            size="large"
+            style={{ width: "100%" }}
+            min={0}
+            max={totalBruto}
+            precision={2}
+            decimalSeparator=","
+            prefix="R$"
+            placeholder="0,00"
+            value={valorReais}
+            onChange={handleValorChange}
+            onKeyDown={e => { if (e.key === "Enter") confirmar(); }}
+            status={descontoInvalido ? "error" : undefined}
+          />
         </div>
+
+        {/* Campo % */}
+        <div>
+          <Text
+            type="secondary"
+            style={{ display: "block", fontWeight: 600, fontSize: 13, marginBottom: 8 }}
+          >
+            Desconto em %
+          </Text>
+          <InputNumber
+            size="large"
+            style={{ width: "100%" }}
+            min={0}
+            max={100}
+            precision={2}
+            decimalSeparator=","
+            suffix="%"
+            placeholder="0,00"
+            value={valorPercent}
+            onChange={handlePercentChange}
+            onKeyDown={e => { if (e.key === "Enter") confirmar(); }}
+          />
+        </div>
+
+        {/* Preview */}
+        {descontoValor > 0 && (
+          <>
+            <Divider style={{ margin: "4px 0" }} />
+
+            {descontoInvalido ? (
+              <Alert
+                type="error"
+                message="Desconto maior que o total do pedido"
+                showIcon
+              />
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Row justify="space-between">
+                  <Text type="secondary">Desconto</Text>
+                  <Text style={{ color: C.error, fontWeight: 600 }}>
+                    − R$ {descontoValor.toFixed(2)}
+                    <Text type="secondary" style={{ fontSize: 13, marginLeft: 6 }}>
+                      ({descontoPct.toFixed(1)}%)
+                    </Text>
+                  </Text>
+                </Row>
+                <Row justify="space-between">
+                  <Text strong>Total com desconto</Text>
+                  <Text strong style={{ fontSize: 18, color: C.success }}>
+                    R$ {totalComDesconto.toFixed(2)}
+                  </Text>
+                </Row>
+              </div>
+            )}
+          </>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
