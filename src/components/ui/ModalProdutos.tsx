@@ -7,23 +7,27 @@ import { execute } from "../../services/odoo";
 
 const { Text } = Typography;
 
+// ─── Campo NCM ───────────────────────────────────────────────────────────────
+// Trocar para 'l10n_br_ncm_code' após instalar l10n_br_fiscal no Proxmox
+const NCM_FIELD = "x_ncm" as const;
+
 const POR_PAGINA = 50;
 
 interface Props {
-  aberto:      boolean;
-  onFechar:    () => void;
-  onSelecionar:(produto: Produto) => void;
+  aberto:       boolean;
+  onFechar:     () => void;
+  onSelecionar: (produto: Produto) => void;
 }
 
 export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props) {
   const [busca,      setBusca]      = useState("");
   const [produtos,   setProdutos]   = useState<Produto[]>([]);
   const [carregando, setCarregando] = useState(false);
-  const [pagina,     setPagina]     = useState(1);   // antd Table usa base-1
+  const [pagina,     setPagina]     = useState(1);
   const [total,      setTotal]      = useState(0);
+  const [ncmMap,     setNcmMap]     = useState<Record<number, string>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Abre/reseta ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (aberto) {
       setBusca("");
@@ -32,7 +36,6 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
     }
   }, [aberto]);
 
-  // ── Query ao Odoo (lógica 100% preservada) ───────────────────────────────
   async function buscarProdutos(termo: string, pag: number) {
     setCarregando(true);
     try {
@@ -45,9 +48,7 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
         : [];
 
       const resultado = await execute(
-        "product.product",
-        "search_read",
-        [domain],
+        "product.product", "search_read", [domain],
         {
           fields: ["id", "name", "barcode", "default_code", "list_price", "qty_available"],
           limit:  POR_PAGINA,
@@ -55,11 +56,14 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
           order:  "name asc",
         }
       );
-
-      setProdutos(resultado ?? []);
+      const lista = (resultado ?? []) as Produto[];
+      setProdutos(lista);
 
       const count = await execute("product.product", "search_count", [domain]);
       setTotal(count ?? 0);
+
+      // Busca NCMs (falha silenciosa)
+      await buscarNcms(lista.map((p: Produto) => p.id));
     } catch {
       setProdutos([]);
     } finally {
@@ -67,7 +71,34 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
     }
   }
 
-  // ── Busca com debounce ───────────────────────────────────────────────────
+  async function buscarNcms(prodIds: number[]) {
+    if (!prodIds.length) return;
+    try {
+      const prodTmpls = await execute(
+        "product.product", "read",
+        [prodIds, ["id", "product_tmpl_id"]],
+      ) as Array<{ id: number; product_tmpl_id: [number, string] }>;
+
+      const tmplIds = [...new Set(prodTmpls.map(p => p.product_tmpl_id[0]))];
+      const tmpls = await execute(
+        "product.template", "read",
+        [tmplIds, ["id", NCM_FIELD]],
+      ) as Array<{ id: number; [key: string]: unknown }>;
+
+      const tmplNcmMap: Record<number, string> = {};
+      tmpls.forEach(t => {
+        const v = t[NCM_FIELD];
+        if (typeof v === "string" && v.trim()) tmplNcmMap[t.id] = v.trim();
+      });
+
+      const map: Record<number, string> = {};
+      prodTmpls.forEach(p => { map[p.id] = tmplNcmMap[p.product_tmpl_id[0]] || ""; });
+      setNcmMap(map);
+    } catch {
+      // falha silenciosa
+    }
+  }
+
   function handleBusca(valor: string) {
     setBusca(valor);
     setPagina(1);
@@ -85,12 +116,11 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
     onFechar();
   }
 
-  // ── Colunas da tabela ────────────────────────────────────────────────────
   const colunas: TableColumnsType<Produto> = [
     {
       title:     "SKU",
       dataIndex: "default_code",
-      width:     110,
+      width:     100,
       render:    (v: string) => v
         ? <Text code style={{ fontSize: 12 }}>{v}</Text>
         : <Text type="secondary">—</Text>,
@@ -102,9 +132,21 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
       render:    (v: string) => <Text strong style={{ fontSize: 14 }}>{v}</Text>,
     },
     {
+      title:     "NCM",
+      key:       "ncm",
+      width:     100,
+      align:     "center",
+      render:    (_: unknown, record: Produto) => {
+        const ncm = ncmMap[record.id];
+        return ncm
+          ? <Text code style={{ fontSize: 11 }}>{ncm}</Text>
+          : <Text type="secondary" style={{ fontSize: 12 }}>—</Text>;
+      },
+    },
+    {
       title:     "Cód. Barras",
       dataIndex: "barcode",
-      width:     150,
+      width:     140,
       render:    (v: string) => v
         ? <Text style={{ fontFamily: "monospace", fontSize: 12 }}>{v}</Text>
         : <Text type="secondary">—</Text>,
@@ -157,7 +199,7 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
       centered
       onCancel={onFechar}
       keyboard
-      width="min(92vw, 860px)"
+      width="min(92vw, 920px)"
       footer={
         <Text type="secondary" style={{ fontSize: 13 }}>
           {total} produto{total !== 1 ? "s" : ""} encontrado{total !== 1 ? "s" : ""}
@@ -166,7 +208,6 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: "8px 0" }}>
 
-        {/* Campo de busca */}
         <Input
           autoFocus
           allowClear
@@ -177,7 +218,6 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
           onChange={e => handleBusca(e.target.value)}
         />
 
-        {/* Tabela */}
         <Table<Produto>
           rowKey="id"
           size="small"
@@ -190,12 +230,12 @@ export default function ModalProdutos({ aberto, onFechar, onSelecionar }: Props)
             style:   { cursor: "pointer" },
           })}
           pagination={{
-            current:   pagina,
-            pageSize:  POR_PAGINA,
+            current:         pagina,
+            pageSize:        POR_PAGINA,
             total,
-            onChange:  handlePagina,
-            showTotal: () => null,
-            size:      "small",
+            onChange:        handlePagina,
+            showTotal:       () => null,
+            size:            "small",
             showSizeChanger: false,
           }}
           locale={{ emptyText: "Nenhum produto encontrado" }}

@@ -23,45 +23,46 @@ import {
   PrinterOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import { buscarPorBarcode, registrarVenda, execute } from "../../services/odoo"; // ← execute adicionado
+import { buscarPorBarcode, registrarVenda, execute } from "../../services/odoo";
 import { Produto, ItemVenda, TipoVenda } from "../../types";
 import ModalProdutos from "../../components/ui/ModalProdutos";
 import ModalDesconto from "../../components/ui/ModalDesconto";
+import ModalNCM, { NcmMap } from "../../components/ui/ModalNCM";
 import { emitirNFCe, FormaPagamento, buscarDanfeHtml } from "../../services/fiscal";
 import { usePDVShortcuts } from "../../hooks/usePDVShortcuts";
 
 const { Text, Title } = Typography;
 
-// Tokens de cor inline — espelham src/theme.ts para consistência
 const C = {
-  amber:      "#F59E0B",
-  amberBg:    "#FFF8E7",
-  success:    "#22C55E",
-  error:      "#EF4444",
-  bgRow:      "#F8FAFC",
-  border:     "#E2E8F0",
-  textMuted:  "#64748B",
+  amber:     "#F59E0B",
+  amberBg:   "#FFF8E7",
+  success:   "#22C55E",
+  error:     "#EF4444",
+  bgRow:     "#F8FAFC",
+  border:    "#E2E8F0",
+  textMuted: "#64748B",
 } as const;
 
 export default function PDV() {
   const { message, modal } = App.useApp();
 
-  const [tipoVenda, setTipoVenda]             = useState<TipoVenda>("recibo");
-  const [carrinho, setCarrinho]               = useState<ItemVenda[]>([]);
-  const [desconto, setDesconto]               = useState(0);
-  const [ultimoDesconto, setUltimoDesconto]   = useState(0);
-  const [barcodeBuffer, setBarcodeBuffer]     = useState("");
-  const [buscando, setBuscando]               = useState(false);
-  const [finalizando, setFinalizando]         = useState(false);
-  const [modalAberto, setModalAberto]         = useState(false);
-  const [modalPagamento, setModalPagamento]   = useState(false);
-  const [modalCliente, setModalCliente]       = useState(false);
-  const [modalDesconto, setModalDesconto]     = useState(false);
-  const [formaPagamento, setFormaPagamento]   = useState<FormaPagamento>("dinheiro");
-  const [cpfCnpj, setCpfCnpj]               = useState("");
-  const [emitindoNFCe, setEmitindoNFCe]     = useState(false);
-  const [resultadoNFCe, setResultadoNFCe]   = useState<{ danfeUrl?: string; chave?: string } | null>(null);
-  const [danfeHtml, setDanfeHtml]           = useState<string | null>(null);
+  const [tipoVenda, setTipoVenda]           = useState<TipoVenda>("recibo");
+  const [carrinho, setCarrinho]             = useState<ItemVenda[]>([]);
+  const [desconto, setDesconto]             = useState(0);
+  const [ultimoDesconto, setUltimoDesconto] = useState(0);
+  const [barcodeBuffer, setBarcodeBuffer]   = useState("");
+  const [buscando, setBuscando]             = useState(false);
+  const [finalizando, setFinalizando]       = useState(false);
+  const [modalAberto, setModalAberto]       = useState(false);
+  const [modalPagamento, setModalPagamento] = useState(false);
+  const [modalCliente, setModalCliente]     = useState(false);
+  const [modalDesconto, setModalDesconto]   = useState(false);
+  const [modalNCM, setModalNCM]             = useState(false);          // ← novo
+  const [formaPagamento, setFormaPagamento] = useState<FormaPagamento>("dinheiro");
+  const [cpfCnpj, setCpfCnpj]             = useState("");
+  const [emitindoNFCe, setEmitindoNFCe]   = useState(false);
+  const [resultadoNFCe, setResultadoNFCe] = useState<{ danfeUrl?: string; chave?: string } | null>(null);
+  const [danfeHtml, setDanfeHtml]         = useState<string | null>(null);
   const [carregandoDanfe, setCarregandoDanfe] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -70,6 +71,7 @@ export default function PDV() {
     modalPagamento ||
     modalCliente   ||
     modalDesconto  ||
+    modalNCM       ||    // ← adicionado
     !!resultadoNFCe;
 
   function refocusInput() {
@@ -88,7 +90,7 @@ export default function PDV() {
   usePDVShortcuts(
     {
       onF1:  () => setModalAberto(true),
-      onF2:  () => setTipoVenda(t => t === "recibo" ? "nfce" : "recibo"),
+      onF2:  () => setTipoVenda((t) => (t === "recibo" ? "nfce" : "recibo")),
       onF3:  () => setModalDesconto(true),
       onF4:  finalizarVenda,
       onAlt: () => abrirModalPagamento("debito"),
@@ -106,9 +108,9 @@ export default function PDV() {
   }, [algumModalAberto]);
 
   function exibirMensagem(tipo: "sucesso" | "erro" | "aviso", texto: string) {
-    if (tipo === "sucesso") message.success(texto);
-    else if (tipo === "erro") message.error(texto);
-    else message.warning(texto);
+    if (tipo === "sucesso")     message.success(texto);
+    else if (tipo === "erro")   message.error(texto);
+    else                        message.warning(texto);
   }
 
   function selecionarProdutoModal(produto: Produto) {
@@ -148,8 +150,7 @@ export default function PDV() {
   }
 
   function adicionarAoCarrinho(produto: Produto) {
-    const temDesconto = desconto > 0;
-    if (temDesconto) {
+    if (desconto > 0) {
       limparDesconto();
     } else {
       exibirMensagem("sucesso", `${produto.name} adicionado`);
@@ -171,7 +172,9 @@ export default function PDV() {
     if (desconto > 0) limparDesconto();
     setCarrinho((prev) =>
       prev
-        .map((i) => i.produto.id === produtoId ? { ...i, quantidade: i.quantidade + delta } : i)
+        .map((i) =>
+          i.produto.id === produtoId ? { ...i, quantidade: i.quantidade + delta } : i
+        )
         .filter((i) => i.quantidade > 0)
     );
   }
@@ -196,14 +199,14 @@ export default function PDV() {
 
   function confirmarCancelamento() {
     modal.confirm({
-      title: "Cancelar venda?",
-      content: "Todos os itens do carrinho serão removidos.",
-      okText: "Cancelar Venda",
+      title:         "Cancelar venda?",
+      content:       "Todos os itens do carrinho serão removidos.",
+      okText:        "Cancelar Venda",
       okButtonProps: { danger: true },
-      cancelText: "Voltar",
-      onOk: cancelarVenda,
-      centered: true,
-      maskClosable: true,
+      cancelText:    "Voltar",
+      onOk:          cancelarVenda,
+      centered:      true,
+      maskClosable:  true,
     });
   }
 
@@ -212,25 +215,34 @@ export default function PDV() {
       exibirMensagem("erro", "Carrinho vazio.");
       return;
     }
+    // NFC-e: primeiro abre modal de pagamento
     if (tipoVenda === "nfce") {
       abrirModalPagamento("dinheiro");
       return;
     }
-    await processarVenda();
+    // Recibo: abre modal NCM (opcional) antes de processar
+    setModalNCM(true);
   }
 
-  // ─── processarVenda ────────────────────────────────────────────────────────
-  // Patch: coleta os picking IDs retornados por registrarVenda() e, após
-  // concluir a venda, persiste no Odoo:
-  //   - Recibo: origin = "RECIBO-{timestamp}" para agrupamento nos relatórios
-  //   - NFC-e:  origin = "NFCE-{chave_curta}" + note = chave completa (44 dígitos)
-  //             para identificação e reimpressão futura
-  // O bloco try/catch isola essa gravação — falha silenciosa, não bloqueia a venda.
+  // ─── processarVenda ──────────────────────────────────────────────────────────
+  // Chamado pelo botão "Emitir NFC-e" no modal de pagamento.
+  // Fecha o modal de pagamento e abre o ModalNCM (obrigatório para NFC-e).
+  // O ModalNCM chama executarVenda() ao confirmar.
   async function processarVenda() {
+    setModalPagamento(false);
+    setModalNCM(true);
+  }
+
+  // ─── executarVenda ───────────────────────────────────────────────────────────
+  // Recebe o mapa de NCMs validados/preenchidos pelo ModalNCM.
+  // Executa: registrarVenda (para cada item) → emitirNFCe (se nfce) → salva metadados.
+  async function executarVenda(ncmMap: NcmMap) {
+    setModalNCM(false);
     setFinalizando(true);
-    const pickingIds: number[] = []; // ← coleta IDs para gravação posterior
+    const pickingIds: number[] = [];
 
     try {
+      // 1. Movimenta estoque para cada item do carrinho
       for (const item of carrinho) {
         const resultado = await registrarVenda(
           item.produto.id,
@@ -241,19 +253,18 @@ export default function PDV() {
           exibirMensagem("erro", `Erro em ${item.produto.name}: ${resultado.erro}`);
           return;
         }
-        // picking_id é o picking real (WH/Estoque → Clientes)
-        if (resultado.picking_id) {
-          pickingIds.push(resultado.picking_id);
-        }
+        if (resultado.picking_id) pickingIds.push(resultado.picking_id);
       }
 
+      // 2. NFC-e: emite nota fiscal com NCMs reais
       if (tipoVenda === "nfce") {
         setEmitindoNFCe(true);
+
         const resultado = await emitirNFCe({
-          itens: carrinho.map(item => ({
+          itens: carrinho.map((item) => ({
             produtoId:  item.produto.id,
             nome:       item.produto.name,
-            ncm:        "00000000",
+            ncm:        ncmMap[item.produto.id] ?? "00000000", // ← NCM real
             barcode:    item.produto.barcode || undefined,
             quantidade: item.quantidade,
             valorUnit:  item.preco_unitario,
@@ -271,28 +282,26 @@ export default function PDV() {
           return;
         }
 
-        // ── Persiste chave NFC-e nos pickings (não bloqueia em caso de falha) ──
+        // Persiste chave NFC-e nos pickings para o módulo de Relatórios
         if (resultado.chave && pickingIds.length > 0) {
           try {
             await execute("stock.picking", "write", [
               pickingIds,
               {
-                // origin: identificador curto visível no Odoo e nos filtros
                 origin: `NFCE-${resultado.chave.slice(-8)}`,
-                // note: chave completa (44 dígitos) para reimpressão futura
-                note: resultado.chave,
+                note:   resultado.chave,
               },
             ]);
           } catch {
-            // Gravação de metadados — não interrompe o fluxo da venda
+            // Falha silenciosa — não bloqueia a venda
           }
         }
 
         setResultadoNFCe({ danfeUrl: resultado.danfeUrl, chave: resultado.chave });
         exibirMensagem("sucesso", "NFC-e autorizada com sucesso!");
 
+      // 3. Recibo: apenas persiste referência de agrupamento
       } else {
-        // ── Persiste referência de agrupamento no recibo (não bloqueia) ────────
         if (pickingIds.length > 0) {
           try {
             await execute("stock.picking", "write", [
@@ -300,17 +309,17 @@ export default function PDV() {
               { origin: `RECIBO-${Date.now()}` },
             ]);
           } catch {
-            // Gravação de metadados — não interrompe o fluxo da venda
+            // Falha silenciosa
           }
         }
-
         exibirMensagem("sucesso", "Venda finalizada!");
       }
 
+      // 4. Limpa carrinho
       setCarrinho([]);
       setDesconto(0);
-      setModalPagamento(false);
       setCpfCnpj("");
+
     } catch {
       exibirMensagem("erro", "Erro ao finalizar venda.");
     } finally {
@@ -377,14 +386,14 @@ export default function PDV() {
                 </Text>
                 <div style={{
                   marginTop: 20,
-                  background: C.bgRow,
-                  border: `2px dashed ${C.border}`,
+                  background:  C.bgRow,
+                  border:      `2px dashed ${C.border}`,
                   borderRadius: 10,
-                  padding: "12px 24px",
-                  fontFamily: "monospace",
-                  fontSize: 18,
-                  minWidth: 200,
-                  color: barcodeBuffer ? "#1A1A1A" : C.border,
+                  padding:     "12px 24px",
+                  fontFamily:  "monospace",
+                  fontSize:    18,
+                  minWidth:    200,
+                  color:       barcodeBuffer ? "#1A1A1A" : C.border,
                 }}>
                   {barcodeBuffer || "aguardando..."}
                 </div>
@@ -410,29 +419,23 @@ export default function PDV() {
                   <div
                     key={item.produto.id}
                     style={{
-                      display: "flex", alignItems: "center", gap: 12,
-                      padding: 12, background: C.bgRow, borderRadius: 10,
+                      display:    "flex",
+                      alignItems: "center",
+                      gap:        12,
+                      padding:    12,
+                      background: C.bgRow,
+                      borderRadius: 10,
                     }}
                   >
                     <Text style={{ flex: 1, fontSize: 14, fontWeight: 500 }}>
                       {item.produto.name}
                     </Text>
                     <Space size={8}>
-                      <Button
-                        size="small"
-                        onClick={() => alterarQuantidade(item.produto.id, -1)}
-                      >
-                        −
-                      </Button>
+                      <Button size="small" onClick={() => alterarQuantidade(item.produto.id, -1)}>−</Button>
                       <Text strong style={{ minWidth: 24, textAlign: "center", display: "inline-block" }}>
                         {item.quantidade}
                       </Text>
-                      <Button
-                        size="small"
-                        onClick={() => alterarQuantidade(item.produto.id, +1)}
-                      >
-                        +
-                      </Button>
+                      <Button size="small" onClick={() => alterarQuantidade(item.produto.id, +1)}>+</Button>
                     </Space>
                     <Text strong style={{ minWidth: 80, textAlign: "right", fontSize: 14 }}>
                       R$ {(item.preco_unitario * item.quantidade).toFixed(2)}
@@ -476,11 +479,7 @@ export default function PDV() {
                 onClick={finalizarVenda}
                 disabled={carrinho.length === 0}
                 loading={finalizando}
-                style={
-                  carrinho.length > 0
-                    ? { background: C.success, borderColor: C.success }
-                    : {}
-                }
+                style={carrinho.length > 0 ? { background: C.success, borderColor: C.success } : {}}
               >
                 {finalizando ? "Processando..." : "Finalizar Venda"}
               </Button>
@@ -501,12 +500,8 @@ export default function PDV() {
         </Col>
       </Row>
 
-      {/* ── Hints de atalho (rodapé fixo) ── */}
-      <Space
-        size={12}
-        wrap
-        style={{ position: "fixed", bottom: 16, right: 24 }}
-      >
+      {/* ── Hints de atalho ── */}
+      <Space size={12} wrap style={{ position: "fixed", bottom: 16, right: 24 }}>
         {(
           [
             ["F1", "Produtos"],
@@ -555,10 +550,7 @@ export default function PDV() {
         ]}
       >
         <div style={{ padding: "16px 0" }}>
-          <Text
-            type="secondary"
-            style={{ display: "block", marginBottom: 8, fontWeight: 600 }}
-          >
+          <Text type="secondary" style={{ display: "block", marginBottom: 8, fontWeight: 600 }}>
             CPF / CNPJ
           </Text>
           <Input
@@ -566,10 +558,10 @@ export default function PDV() {
             prefix={<UserOutlined />}
             size="large"
             value={cpfCnpj}
-            onChange={e => setCpfCnpj(e.target.value)}
+            onChange={(e) => setCpfCnpj(e.target.value)}
             placeholder="000.000.000-00 ou 00.000.000/0001-00"
             maxLength={18}
-            onKeyDown={e => {
+            onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === "Escape") {
                 setModalCliente(false);
                 refocusInput();
@@ -588,7 +580,24 @@ export default function PDV() {
         onFechar={() => { setModalDesconto(false); refocusInput(); }}
       />
 
-      {/* ── Modal Pagamento / NFC-e ── */}
+      {/* ── Modal NCM ── */}
+      {/* NFC-e: obrigatorio=true (bloqueia emissão se faltar NCM)   */}
+      {/* Recibo: obrigatorio=false (pode pular, apenas sugere)       */}
+      <ModalNCM
+        isOpen={modalNCM}
+        itens={carrinho}
+        obrigatorio={tipoVenda === "nfce"}
+        onConfirmar={(ncmMap) => {
+          refocusInput();
+          executarVenda(ncmMap);
+        }}
+        onFechar={() => {
+          setModalNCM(false);
+          refocusInput();
+        }}
+      />
+
+      {/* ── Modal Pagamento (NFC-e) ── */}
       <Modal
         title="💳 Finalizar com NFC-e"
         open={modalPagamento}
@@ -612,9 +621,14 @@ export default function PDV() {
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 20, padding: "16px 0" }}>
 
+          {/* Total */}
           <div style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center",
-            padding: "14px 18px", background: C.amberBg, borderRadius: 12,
+            display:        "flex",
+            justifyContent: "space-between",
+            alignItems:     "center",
+            padding:        "14px 18px",
+            background:     C.amberBg,
+            borderRadius:   12,
           }}>
             <Text style={{ fontSize: 15 }}>Total</Text>
             <Text strong style={{ fontSize: 22, color: C.amber }}>
@@ -622,16 +636,14 @@ export default function PDV() {
             </Text>
           </div>
 
+          {/* Forma de pagamento */}
           <div>
-            <Text
-              type="secondary"
-              style={{ display: "block", marginBottom: 8, fontWeight: 600, fontSize: 13 }}
-            >
+            <Text type="secondary" style={{ display: "block", marginBottom: 8, fontWeight: 600, fontSize: 13 }}>
               Forma de Pagamento
             </Text>
             <Radio.Group
               value={formaPagamento}
-              onChange={e => setFormaPagamento(e.target.value)}
+              onChange={(e) => setFormaPagamento(e.target.value)}
               buttonStyle="solid"
               style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, width: "100%" }}
             >
@@ -642,7 +654,7 @@ export default function PDV() {
                   { valor: "credito",  label: "💳 Crédito"  },
                   { valor: "pix",      label: "📱 Pix"      },
                 ] as { valor: FormaPagamento; label: string }[]
-              ).map(f => (
+              ).map((f) => (
                 <Radio.Button
                   key={f.valor}
                   value={f.valor}
@@ -654,11 +666,9 @@ export default function PDV() {
             </Radio.Group>
           </div>
 
+          {/* CPF/CNPJ */}
           <div>
-            <Text
-              type="secondary"
-              style={{ display: "block", marginBottom: 8, fontWeight: 600, fontSize: 13 }}
-            >
+            <Text type="secondary" style={{ display: "block", marginBottom: 8, fontWeight: 600, fontSize: 13 }}>
               CPF/CNPJ na nota (opcional)
             </Text>
             <Input
@@ -666,11 +676,11 @@ export default function PDV() {
               prefix={<UserOutlined />}
               size="large"
               value={cpfCnpj}
-              onChange={e => setCpfCnpj(e.target.value)}
+              onChange={(e) => setCpfCnpj(e.target.value)}
               placeholder="000.000.000-00 ou 00.000.000/0001-00"
               maxLength={18}
-              onKeyDown={e => {
-                if (e.key === "Enter") processarVenda();
+              onKeyDown={(e) => {
+                if (e.key === "Enter")  processarVenda();
                 if (e.key === "Escape") setModalPagamento(false);
               }}
             />
@@ -702,10 +712,7 @@ export default function PDV() {
                 >
                   Imprimir
                 </Button>,
-                <Button
-                  key="fechar"
-                  onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}
-                >
+                <Button key="fechar" onClick={() => { setResultadoNFCe(null); setDanfeHtml(null); }}>
                   Fechar
                 </Button>,
               ]
@@ -721,22 +728,30 @@ export default function PDV() {
         }
       >
         <div style={{
-          display: "flex", flexDirection: "column", gap: 16, padding: "16px 0",
+          display:       "flex",
+          flexDirection: "column",
+          gap:           16,
+          padding:       "16px 0",
           ...(danfeHtml ? { flex: 1 } : {}),
         }}>
+          {/* Chave de acesso */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <Text type="secondary" style={{ fontWeight: 600, fontSize: 13 }}>
-              Chave de acesso
-            </Text>
+            <Text type="secondary" style={{ fontWeight: 600, fontSize: 13 }}>Chave de acesso</Text>
             <code style={{
-              fontFamily: "monospace", fontSize: 12,
-              background: C.bgRow, padding: 10, borderRadius: 8,
-              wordBreak: "break-all", color: "#1A1A1A", display: "block",
+              fontFamily: "monospace",
+              fontSize:   12,
+              background: C.bgRow,
+              padding:    10,
+              borderRadius: 8,
+              wordBreak:  "break-all",
+              color:      "#1A1A1A",
+              display:    "block",
             }}>
               {resultadoNFCe?.chave}
             </code>
           </div>
 
+          {/* Botão visualizar DANFE */}
           {resultadoNFCe?.danfeUrl && !danfeHtml && (
             <Button
               type="primary"
@@ -750,8 +765,7 @@ export default function PDV() {
                 try {
                   const html = await buscarDanfeHtml(resultadoNFCe.danfeUrl!);
                   setDanfeHtml(html);
-                } catch (error) {
-                  console.error("Erro ao carregar DANFE:", error);
+                } catch {
                   message.error("Erro ao carregar DANFE");
                 } finally {
                   setCarregandoDanfe(false);
@@ -762,6 +776,7 @@ export default function PDV() {
             </Button>
           )}
 
+          {/* iframe do DANFE */}
           {danfeHtml && (
             <iframe
               srcDoc={danfeHtml}
@@ -772,7 +787,6 @@ export default function PDV() {
           )}
         </div>
       </Modal>
-
     </div>
   );
 }

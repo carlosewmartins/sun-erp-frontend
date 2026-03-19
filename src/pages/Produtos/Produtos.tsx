@@ -27,6 +27,7 @@ import {
   PlusOutlined,
   SearchOutlined,
   SettingOutlined,
+  TagOutlined,
 } from "@ant-design/icons";
 import {
   buscarProdutos,
@@ -37,13 +38,18 @@ import {
   ajusteEstoque,
   ajusteDireto,
   buscarSaldosTodos,
+  execute,
 } from "../../services/odoo";
 import ModalVariantes from "../../components/ui/ModalVariantes";
 import { LOCATION_LIST } from "../../constants/locations";
 
 const { Text, Title } = Typography;
 
-// ─── Tipos (idênticos ao original) ───────────────────────────────────────────
+// ─── Campo NCM no product.template ───────────────────────────────────────────
+// Trocar para 'l10n_br_ncm_code' após instalar l10n_br_fiscal no Proxmox
+const NCM_FIELD = "x_ncm" as const;
+
+// ─── Tipos ───────────────────────────────────────────────────────────────────
 
 interface Produto {
   id:            number;
@@ -56,9 +62,9 @@ interface Produto {
 }
 
 interface SaldoLocal {
-  location_id:         [number, string];
-  quantity:            number;
-  reserved_quantity:   number;
+  location_id:       [number, string];
+  quantity:          number;
+  reserved_quantity: number;
 }
 
 interface FormData {
@@ -66,12 +72,20 @@ interface FormData {
   barcode:      string;
   default_code: string;
   list_price:   string;
+  ncm:          string;   // ← NCM (8 dígitos numéricos)
 }
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
-const FORM_VAZIO: FormData = { name: "", barcode: "", default_code: "", list_price: "" };
-const POR_PAGINA   = 50;
+const FORM_VAZIO: FormData = {
+  name:         "",
+  barcode:      "",
+  default_code: "",
+  list_price:   "",
+  ncm:          "",
+};
+
+const POR_PAGINA    = 50;
 const ESTOQUE_BAIXO = 5;
 
 const C = {
@@ -86,30 +100,37 @@ const C = {
 export default function Produtos() {
   const { message, modal } = App.useApp();
 
-  // ── Estados (idênticos ao original) ──────────────────────────────────────
-  const [produtos,        setProdutos]        = useState<Produto[]>([]);
-  const [total,           setTotal]           = useState(0);
-  const [pagina,          setPagina]          = useState(1);       // base-1 (antd Table)
-  const [busca,           setBusca]           = useState("");
-  const [carregando,      setCarregando]      = useState(true);
-  const [modalAberto,     setModalAberto]     = useState(false);
-  const [editando,        setEditando]        = useState<Produto | null>(null);
-  const [form,            setForm]            = useState<FormData>(FORM_VAZIO);
-  const [salvando,        setSalvando]        = useState(false);
-  const [saldos,          setSaldos]          = useState<SaldoLocal[]>([]);
-  const [produtoDetalhe,  setProdutoDetalhe]  = useState<Produto | null>(null);
-  const [modalAjuste,     setModalAjuste]     = useState(false);
-  const [ajusteTipo,      setAjusteTipo]      = useState<"entrada" | "saida" | "direto">("entrada");
-  const [ajusteLocal,     setAjusteLocal]     = useState<number>(LOCATION_LIST[0].id);
-  const [ajusteQtd,       setAjusteQtd]       = useState<number | null>(null);
-  const [ajustando,       setAjustando]       = useState(false);
-  const [saldosTotais,    setSaldosTotais]    = useState<Record<number, number>>({});
-  const [modalVariantes,  setModalVariantes]  = useState(false);
+  // ── Estados ──────────────────────────────────────────────────────────────
+  const [produtos,       setProdutos]       = useState<Produto[]>([]);
+  const [total,          setTotal]          = useState(0);
+  const [pagina,         setPagina]         = useState(1);
+  const [busca,          setBusca]          = useState("");
+  const [carregando,     setCarregando]     = useState(true);
+  const [modalAberto,    setModalAberto]    = useState(false);
+  const [editando,       setEditando]       = useState<Produto | null>(null);
+  const [form,           setForm]           = useState<FormData>(FORM_VAZIO);
+  const [salvando,       setSalvando]       = useState(false);
+  const [saldos,         setSaldos]         = useState<SaldoLocal[]>([]);
+  const [produtoDetalhe, setProdutoDetalhe] = useState<Produto | null>(null);
+  const [modalAjuste,    setModalAjuste]    = useState(false);
+  const [ajusteTipo,     setAjusteTipo]     = useState<"entrada" | "saida" | "direto">("entrada");
+  const [ajusteLocal,    setAjusteLocal]    = useState<number>(LOCATION_LIST[0].id);
+  const [ajusteQtd,      setAjusteQtd]     = useState<number | null>(null);
+  const [ajustando,      setAjustando]     = useState(false);
+  const [saldosTotais,   setSaldosTotais]  = useState<Record<number, number>>({});
+  const [modalVariantes, setModalVariantes] = useState(false);
+
+  // ── Estados NCM ───────────────────────────────────────────────────────────
+  // ncmMap:    product.product.id → ncm string
+  // tmplIdMap: product.product.id → product.template.id
+  const [ncmMap,    setNcmMap]    = useState<Record<number, string>>({});
+  const [tmplIdMap, setTmplIdMap] = useState<Record<number, number>>({});
+
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { carregar("", 1); }, []);
 
-  // ── Lógica de negócio (100% preservada) ──────────────────────────────────
+  // ── Lógica de negócio ─────────────────────────────────────────────────────
 
   async function carregar(termo: string, pag: number) {
     setCarregando(true);
@@ -121,13 +142,56 @@ export default function Produtos() {
       const produtosList = lista as Produto[];
       setProdutos(produtosList);
       setTotal(count);
+
       const ids    = produtosList.map(p => p.id);
       const totais = await buscarSaldosTodos(ids);
       setSaldosTotais(totais);
+
+      // Busca NCMs (falha silenciosa — não bloqueia a tela)
+      await carregarNcms(ids);
     } catch {
       message.error("Erro ao carregar produtos.");
     } finally {
       setCarregando(false);
+    }
+  }
+
+  /**
+   * Busca NCMs de uma lista de product.product ids.
+   * Faz join: product.product → product_tmpl_id → product.template → NCM_FIELD
+   */
+  async function carregarNcms(prodIds: number[]) {
+    if (!prodIds.length) return;
+    try {
+      // 1. Busca product_tmpl_id
+      const prodTmpls = await execute(
+        "product.product", "read",
+        [prodIds, ["id", "product_tmpl_id"]],
+      ) as Array<{ id: number; product_tmpl_id: [number, string] }>;
+
+      const newTmplIdMap: Record<number, number> = {};
+      prodTmpls.forEach(p => { newTmplIdMap[p.id] = p.product_tmpl_id[0]; });
+      setTmplIdMap(newTmplIdMap);
+
+      // 2. Busca NCM_FIELD nos templates
+      const tmplIds = [...new Set(Object.values(newTmplIdMap))];
+      const tmpls = await execute(
+        "product.template", "read",
+        [tmplIds, ["id", NCM_FIELD]],
+      ) as Array<{ id: number; [key: string]: unknown }>;
+
+      const tmplNcmMap: Record<number, string> = {};
+      tmpls.forEach(t => {
+        const v = t[NCM_FIELD];
+        if (typeof v === "string" && v.trim()) tmplNcmMap[t.id] = v.trim();
+      });
+
+      // 3. Monta mapa product.product.id → ncm
+      const map: Record<number, string> = {};
+      prodTmpls.forEach(p => { map[p.id] = tmplNcmMap[p.product_tmpl_id[0]] || ""; });
+      setNcmMap(map);
+    } catch {
+      // NCM não obrigatório para exibição — falha silenciosa
     }
   }
 
@@ -156,6 +220,7 @@ export default function Produtos() {
       barcode:      p.barcode || "",
       default_code: p.default_code || "",
       list_price:   String(p.list_price),
+      ncm:          ncmMap[p.id] || "",    // ← preenche NCM atual
     });
     setModalAberto(true);
   }
@@ -173,6 +238,8 @@ export default function Produtos() {
     }
     setSalvando(true);
     try {
+      const ncmLimpo = form.ncm.replace(/\D/g, "");
+
       const dados = {
         name:         form.name.trim(),
         barcode:      form.barcode.trim() || undefined,
@@ -180,13 +247,34 @@ export default function Produtos() {
         list_price:   parseFloat(form.list_price) || 0,
         type:         "product",
       };
+
       if (editando) {
         await atualizarProduto(editando.id, dados);
+
+        // Salva NCM no template (usa tmplIdMap para o ID correto)
+        const tmplId = tmplIdMap[editando.id];
+        if (tmplId && ncmLimpo) {
+          await execute("product.template", "write", [
+            [tmplId],
+            { [NCM_FIELD]: ncmLimpo },
+          ]);
+        }
+
         message.success("Produto atualizado com sucesso!");
       } else {
-        await criarProduto(dados);
+        const templateId = await criarProduto(dados) as number;
+
+        // Salva NCM no template recém-criado
+        if (ncmLimpo && templateId) {
+          await execute("product.template", "write", [
+            [templateId],
+            { [NCM_FIELD]: ncmLimpo },
+          ]);
+        }
+
         message.success("Produto criado com sucesso!");
       }
+
       setModalAberto(false);
       carregar(busca, pagina);
     } catch {
@@ -204,10 +292,9 @@ export default function Produtos() {
     }
     setAjustando(true);
     try {
-      const qtd = ajusteQtd;
       const resultado = ajusteTipo === "direto"
-        ? await ajusteDireto(produtoDetalhe.id, ajusteLocal, qtd)
-        : await ajusteEstoque(produtoDetalhe.id, ajusteLocal, qtd, ajusteTipo);
+        ? await ajusteDireto(produtoDetalhe.id, ajusteLocal, ajusteQtd)
+        : await ajusteEstoque(produtoDetalhe.id, ajusteLocal, ajusteQtd, ajusteTipo);
 
       if (resultado.sucesso) {
         message.success("Estoque ajustado com sucesso!");
@@ -267,6 +354,19 @@ export default function Produtos() {
         : <Text type="secondary">—</Text>,
     },
     {
+      // Coluna NCM — exibe valor do ncmMap ou "—" se não cadastrado
+      title:  "NCM",
+      key:    "ncm",
+      width:  110,
+      align:  "center",
+      render: (_: unknown, record: Produto) => {
+        const ncm = ncmMap[record.id];
+        return ncm
+          ? <Text code style={{ fontSize: 11 }}>{ncm}</Text>
+          : <Tag color="warning" style={{ fontSize: 11 }}>Sem NCM</Tag>;
+      },
+    },
+    {
       title:     "Preço",
       dataIndex: "list_price",
       width:     110,
@@ -276,11 +376,11 @@ export default function Produtos() {
       ),
     },
     {
-      title:     "Estoque",
-      key:       "estoque",
-      width:     100,
-      align:     "center",
-      render:    (_: unknown, record: Produto) => {
+      title:  "Estoque",
+      key:    "estoque",
+      width:  100,
+      align:  "center",
+      render: (_: unknown, record: Produto) => {
         const saldo = saldosTotais[record.id] ?? 0;
         return (
           <Tag color={saldo < 0 ? "error" : saldo <= ESTOQUE_BAIXO ? "warning" : "success"}>
@@ -359,7 +459,7 @@ export default function Produtos() {
         </Col>
       </Row>
 
-      {/* Tabela — paginacao separada para overflow:hidden nas 4 bordas */}
+      {/* Tabela */}
       <div style={{ border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden" }}>
         <Table<Produto>
           rowKey="id"
@@ -377,7 +477,7 @@ export default function Produtos() {
         />
       </div>
 
-      {/* Paginacao externa */}
+      {/* Paginação */}
       <Row justify="end">
         <Pagination
           current={pagina}
@@ -413,6 +513,8 @@ export default function Produtos() {
         ]}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: "16px 0" }}>
+
+          {/* Nome */}
           <div>
             <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
               Nome *
@@ -427,6 +529,7 @@ export default function Produtos() {
             />
           </div>
 
+          {/* SKU + Barcode */}
           <Row gutter={12}>
             <Col span={12}>
               <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
@@ -452,22 +555,49 @@ export default function Produtos() {
             </Col>
           </Row>
 
-          <div>
-            <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
-              Preço de Venda (R$)
-            </Text>
-            <InputNumber
-              size="large"
-              style={{ width: "100%" }}
-              min={0}
-              precision={2}
-              decimalSeparator=","
-              prefix="R$"
-              placeholder="0,00"
-              value={form.list_price ? parseFloat(form.list_price) : undefined}
-              onChange={v => setForm({ ...form, list_price: v != null ? String(v) : "" })}
-            />
-          </div>
+          {/* Preço + NCM */}
+          <Row gutter={12}>
+            <Col span={12}>
+              <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+                Preço de Venda (R$)
+              </Text>
+              <InputNumber
+                size="large"
+                style={{ width: "100%" }}
+                min={0}
+                precision={2}
+                decimalSeparator=","
+                prefix="R$"
+                placeholder="0,00"
+                value={form.list_price ? parseFloat(form.list_price) : undefined}
+                onChange={v => setForm({ ...form, list_price: v != null ? String(v) : "" })}
+              />
+            </Col>
+            <Col span={12}>
+              <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+                NCM
+                <Text type="secondary" style={{ fontWeight: 400, marginLeft: 6, fontSize: 12 }}>
+                  (8 dígitos — necessário para NFC-e)
+                </Text>
+              </Text>
+              <Input
+                size="large"
+                prefix={<TagOutlined style={{ color: "#94A3B8" }} />}
+                value={form.ncm}
+                onChange={e => setForm({ ...form, ncm: e.target.value.replace(/\D/g, "").slice(0, 8) })}
+                placeholder="00000000"
+                maxLength={8}
+                style={{ fontFamily: "monospace", letterSpacing: 3 }}
+                status={form.ncm.length > 0 && form.ncm.length < 8 ? "error" : undefined}
+              />
+              {form.ncm.length > 0 && form.ncm.length < 8 && (
+                <Text type="danger" style={{ fontSize: 12 }}>
+                  {form.ncm.length}/8 dígitos
+                </Text>
+              )}
+            </Col>
+          </Row>
+
         </div>
       </Modal>
 
@@ -484,19 +614,26 @@ export default function Produtos() {
         {produtoDetalhe && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-            <Descriptions size="small" column={3} bordered>
+            <Descriptions size="small" column={2} bordered>
               <Descriptions.Item label="SKU">
                 {produtoDetalhe.default_code
                   ? <Text code>{produtoDetalhe.default_code}</Text>
                   : <Text type="secondary">—</Text>}
               </Descriptions.Item>
-              <Descriptions.Item label="Barcode">
-                {produtoDetalhe.barcode || <Text type="secondary">—</Text>}
-              </Descriptions.Item>
               <Descriptions.Item label="Preço">
                 <Text strong style={{ color: C.amber }}>
                   R$ {produtoDetalhe.list_price.toFixed(2)}
                 </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="Cód. Barras" span={2}>
+                {produtoDetalhe.barcode
+                  ? <Text style={{ fontFamily: "monospace" }}>{produtoDetalhe.barcode}</Text>
+                  : <Text type="secondary">—</Text>}
+              </Descriptions.Item>
+              <Descriptions.Item label="NCM" span={2}>
+                {ncmMap[produtoDetalhe.id]
+                  ? <Text code style={{ fontSize: 13, letterSpacing: 2 }}>{ncmMap[produtoDetalhe.id]}</Text>
+                  : <Tag color="warning" style={{ fontSize: 11, margin: 0 }}>Sem NCM — clique em Editar para cadastrar</Tag>}
               </Descriptions.Item>
             </Descriptions>
 
@@ -619,23 +756,17 @@ export default function Produtos() {
                 buttonStyle="solid"
                 style={{ display: "flex" }}
               >
-                <Radio.Button value="entrada" style={{ flex: 1, textAlign: "center" }}>
-                  📥 Entrada
-                </Radio.Button>
-                <Radio.Button value="saida" style={{ flex: 1, textAlign: "center" }}>
-                  📤 Saída
-                </Radio.Button>
-                <Radio.Button value="direto" style={{ flex: 1, textAlign: "center" }}>
-                  🎯 Direto
-                </Radio.Button>
+                <Radio.Button value="entrada" style={{ flex: 1, textAlign: "center" }}>📥 Entrada</Radio.Button>
+                <Radio.Button value="saida"   style={{ flex: 1, textAlign: "center" }}>📤 Saída</Radio.Button>
+                <Radio.Button value="direto"  style={{ flex: 1, textAlign: "center" }}>🎯 Direto</Radio.Button>
               </Radio.Group>
             </div>
 
             <div>
               <Text type="secondary" style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
-                {ajusteTipo === "direto"   ? "Quantidade final desejada" :
-                 ajusteTipo === "entrada"  ? "Quantidade a adicionar"    :
-                                             "Quantidade a remover"}
+                {ajusteTipo === "direto"  ? "Quantidade final desejada" :
+                 ajusteTipo === "entrada" ? "Quantidade a adicionar"    :
+                                            "Quantidade a remover"}
               </Text>
               <InputNumber
                 autoFocus

@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import {
   App,
-  Badge,
   Button,
   Checkbox,
   Col,
@@ -25,6 +24,7 @@ import {
   DeleteOutlined,
   PlusOutlined,
   SaveOutlined,
+  TagOutlined,
   TagsOutlined,
   AppstoreOutlined,
 } from "@ant-design/icons";
@@ -38,11 +38,16 @@ import {
   criarAtributo,
   criarValorAtributo,
   atualizarVariante,
+  execute,
 } from "../../services/odoo";
 
 const { Text, Title } = Typography;
 
-// ─── Tipos (idênticos ao original) ───────────────────────────────────────────
+// ─── Campo NCM ───────────────────────────────────────────────────────────────
+// Trocar para 'l10n_br_ncm_code' após instalar l10n_br_fiscal no Proxmox
+const NCM_FIELD = "x_ncm" as const;
+
+// ─── Tipos ───────────────────────────────────────────────────────────────────
 
 interface Props {
   templateId:   number;
@@ -58,18 +63,18 @@ interface AtributoGlobal {
 }
 
 interface LinhaAtributo {
-  id:                          number;
-  attribute_id:                [number, string];
-  value_ids:                   number[];
-  product_template_value_ids:  number[];
+  id:                         number;
+  attribute_id:               [number, string];
+  value_ids:                  number[];
+  product_template_value_ids: number[];
 }
 
 interface TemplateAttrValue {
-  id:                           number;
-  name:                         string;
-  attribute_id:                 [number, string];
-  product_attribute_value_id:   [number, string];
-  ptav_active:                  boolean;
+  id:                         number;
+  name:                       string;
+  attribute_id:               [number, string];
+  product_attribute_value_id: [number, string];
+  ptav_active:                boolean;
 }
 
 interface Variante {
@@ -88,6 +93,14 @@ interface FormVariante {
   list_price:   string;
 }
 
+const C = {
+  amber:   "#F59E0B",
+  amberBg: "#FFF8E7",
+  success: "#22C55E",
+  border:  "#E2E8F0",
+  bgRow:   "#F8FAFC",
+} as const;
+
 // ─── Componente ──────────────────────────────────────────────────────────────
 
 export default function ModalVariantes({
@@ -99,22 +112,28 @@ export default function ModalVariantes({
   const { message, modal } = App.useApp();
 
   // ── Estados (idênticos ao original) ──────────────────────────────────────
-  const [aba,               setAba]               = useState("atributos");
-  const [atributosGlobais,  setAtributosGlobais]  = useState<AtributoGlobal[]>([]);
-  const [linhasAtributo,    setLinhasAtributo]     = useState<LinhaAtributo[]>([]);
-  const [tavs,              setTavs]              = useState<TemplateAttrValue[]>([]);
-  const [variantes,         setVariantes]         = useState<Variante[]>([]);
-  const [formsVariante,     setFormsVariante]     = useState<Record<number, FormVariante>>({});
-  const [carregando,        setCarregando]        = useState(true);
-  const [salvando,          setSalvando]          = useState<number | null>(null);
+  const [aba,              setAba]              = useState("atributos");
+  const [atributosGlobais, setAtributosGlobais] = useState<AtributoGlobal[]>([]);
+  const [linhasAtributo,   setLinhasAtributo]   = useState<LinhaAtributo[]>([]);
+  const [tavs,             setTavs]             = useState<TemplateAttrValue[]>([]);
+  const [variantes,        setVariantes]        = useState<Variante[]>([]);
+  const [formsVariante,    setFormsVariante]    = useState<Record<number, FormVariante>>({});
+  const [carregando,       setCarregando]       = useState(true);
+  const [salvando,         setSalvando]         = useState<number | null>(null);
+
+  // ── Estados NCM do template ───────────────────────────────────────────────
+  const [ncmTemplate,    setNcmTemplate]    = useState("");
+  const [ncmEditando,    setNcmEditando]    = useState(false);
+  const [ncmInput,       setNcmInput]       = useState("");
+  const [salvandoNcm,    setSalvandoNcm]    = useState(false);
 
   // Modal adicionar atributo
-  const [modalAttr,            setModalAttr]            = useState(false);
-  const [attrSelecionado,      setAttrSelecionado]      = useState<number | "novo">(0);
-  const [novoAttrNome,         setNovoAttrNome]         = useState("");
-  const [valoresSelecionados,  setValoresSelecionados]  = useState<number[]>([]);
-  const [novosValores,         setNovosValores]         = useState<string[]>([""]);
-  const [adicionandoAttr,      setAdicionandoAttr]      = useState(false);
+  const [modalAttr,           setModalAttr]           = useState(false);
+  const [attrSelecionado,     setAttrSelecionado]     = useState<number | "novo">(0);
+  const [novoAttrNome,        setNovoAttrNome]        = useState("");
+  const [valoresSelecionados, setValoresSelecionados] = useState<number[]>([]);
+  const [novosValores,        setNovosValores]        = useState<string[]>([""]);
+  const [adicionandoAttr,     setAdicionandoAttr]     = useState(false);
 
   // Modal configurar variante
   const [modalVariante,       setModalVariante]       = useState(false);
@@ -152,10 +171,50 @@ export default function ModalVariantes({
         };
       }
       setFormsVariante(forms);
+
+      // Busca NCM do template
+      await carregarNcmTemplate();
     } catch {
       message.error("Erro ao carregar dados do produto.");
     } finally {
       setCarregando(false);
+    }
+  }
+
+  async function carregarNcmTemplate() {
+    try {
+      const res = await execute(
+        "product.template", "read",
+        [[templateId], ["id", NCM_FIELD]],
+      ) as Array<{ id: number; [key: string]: unknown }>;
+      const v = res[0]?.[NCM_FIELD];
+      const ncm = typeof v === "string" ? v.trim() : "";
+      setNcmTemplate(ncm);
+      setNcmInput(ncm);
+    } catch {
+      // falha silenciosa
+    }
+  }
+
+  async function salvarNcm() {
+    const ncmLimpo = ncmInput.replace(/\D/g, "");
+    if (ncmLimpo && ncmLimpo.length !== 8) {
+      message.error("NCM deve ter exatamente 8 dígitos");
+      return;
+    }
+    setSalvandoNcm(true);
+    try {
+      await execute("product.template", "write", [
+        [templateId],
+        { [NCM_FIELD]: ncmLimpo || false },
+      ]);
+      setNcmTemplate(ncmLimpo);
+      setNcmEditando(false);
+      message.success("NCM salvo com sucesso!");
+    } catch {
+      message.error("Erro ao salvar NCM.");
+    } finally {
+      setSalvandoNcm(false);
     }
   }
 
@@ -200,8 +259,8 @@ export default function ModalVariantes({
 
   async function handleRemoverAtributo(lineId: number, nomeAttr: string) {
     modal.confirm({
-      title:   `Remover "${nomeAttr}"?`,
-      content: "Esta ação não pode ser desfeita. Variantes associadas podem ser afetadas.",
+      title:          `Remover "${nomeAttr}"?`,
+      content:        "Esta ação não pode ser desfeita. Variantes associadas podem ser afetadas.",
       okText:         "Remover",
       okButtonProps:  { danger: true },
       cancelText:     "Cancelar",
@@ -239,24 +298,32 @@ export default function ModalVariantes({
     setAdicionandoVariante(true);
     try {
       const tavIds = Object.values(tavsSelecionados);
-      const preco  = parseFloat(formNovaVariante.list_price) || precoBase;
+      const variante: Variante = {
+        id: 0,
+        name: templateNome,
+        default_code: formNovaVariante.default_code || false,
+        barcode:      formNovaVariante.barcode      || false,
+        list_price:   parseFloat(formNovaVariante.list_price) || precoBase,
+        qty_available: 0,
+        product_template_attribute_value_ids: tavIds,
+      };
 
-      const todasVariantes = await buscarVariantesProduto(templateId) as Variante[];
-      const varianteExistente = todasVariantes.find(v => {
-        const vTavs   = [...v.product_template_attribute_value_ids].sort();
-        const selTavs = [...tavIds].sort();
-        return JSON.stringify(vTavs) === JSON.stringify(selTavs);
-      });
+      // Busca variante existente com essa combinação
+      const vars = await buscarVariantesProduto(templateId) as Variante[];
+      const existente = vars.find(v =>
+        tavIds.every(tid => v.product_template_attribute_value_ids.includes(tid)) &&
+        v.product_template_attribute_value_ids.length === tavIds.length
+      );
 
-      if (varianteExistente) {
-        await atualizarVariante(varianteExistente.id, {
-          default_code: formNovaVariante.default_code || undefined,
-          barcode:      formNovaVariante.barcode || undefined,
-          list_price:   preco,
+      if (existente) {
+        await atualizarVariante(existente.id, {
+          default_code: variante.default_code || undefined,
+          barcode:      variante.barcode      || undefined,
+          list_price:   variante.list_price,
         });
         message.success("Variante atualizada!");
       } else {
-        message.error("Combinação não encontrada. Verifique os atributos do produto.");
+        message.error("Combinação de variante não existe. Ajuste os atributos primeiro.");
         return;
       }
 
@@ -265,7 +332,7 @@ export default function ModalVariantes({
       setFormNovaVariante({ default_code: "", barcode: "", list_price: "" });
       await carregar();
     } catch {
-      message.error("Erro ao salvar variante.");
+      message.error("Erro ao configurar variante.");
     } finally {
       setAdicionandoVariante(false);
     }
@@ -274,13 +341,14 @@ export default function ModalVariantes({
   async function salvarVariante(varianteId: number) {
     setSalvando(varianteId);
     try {
-      const form = formsVariante[varianteId];
+      const f = formsVariante[varianteId];
       await atualizarVariante(varianteId, {
-        default_code: form.default_code || undefined,
-        barcode:      form.barcode || undefined,
-        list_price:   parseFloat(form.list_price) || precoBase,
+        default_code: f.default_code || undefined,
+        barcode:      f.barcode      || undefined,
+        list_price:   parseFloat(f.list_price) || precoBase,
       });
       message.success("Variante salva!");
+      await carregar();
     } catch {
       message.error("Erro ao salvar variante.");
     } finally {
@@ -288,28 +356,25 @@ export default function ModalVariantes({
     }
   }
 
-  function updateFormVariante(id: number, campo: keyof FormVariante, valor: string) {
-    setFormsVariante(prev => ({ ...prev, [id]: { ...prev[id], [campo]: valor } }));
-  }
+  // ── Derivados ─────────────────────────────────────────────────────────────
 
-  // ── Dados derivados ───────────────────────────────────────────────────────
-  const tavsPorAtributo: Record<number, TemplateAttrValue[]> = {};
-  for (const tav of tavs) {
+  const atributosJaCadastrados = new Set(linhasAtributo.map(l => l.attribute_id[0]));
+  const atributosDisponiveis   = atributosGlobais.filter(a => !atributosJaCadastrados.has(a.id));
+  const tavsPorAtributo        = tavs.reduce<Record<number, TemplateAttrValue[]>>((acc, tav) => {
     const attrId = tav.attribute_id[0];
-    if (!tavsPorAtributo[attrId]) tavsPorAtributo[attrId] = [];
-    tavsPorAtributo[attrId].push(tav);
-  }
+    if (!acc[attrId]) acc[attrId] = [];
+    acc[attrId].push(tav);
+    return acc;
+  }, {});
 
-  const atributosNoProduct  = linhasAtributo.map(l => l.attribute_id[0]);
-  const atributosDisponiveis = atributosGlobais.filter(a => !atributosNoProduct.includes(a.id));
+  // ── Colunas de variantes ──────────────────────────────────────────────────
 
-  // ── Colunas da tabela de variantes ───────────────────────────────────────
   const colunasVariantes: TableColumnsType<Variante> = [
     {
       title:     "Variante",
       dataIndex: "name",
       ellipsis:  true,
-      render:    (v: string) => <Text strong>{v}</Text>,
+      render:    (v: string) => <Text strong style={{ fontSize: 13 }}>{v}</Text>,
     },
     {
       title:  "SKU",
@@ -319,7 +384,10 @@ export default function ModalVariantes({
         <Input
           size="small"
           value={formsVariante[record.id]?.default_code ?? ""}
-          onChange={e => updateFormVariante(record.id, "default_code", e.target.value)}
+          onChange={e => setFormsVariante(prev => ({
+            ...prev,
+            [record.id]: { ...prev[record.id], default_code: e.target.value },
+          }))}
           placeholder="SKU"
         />
       ),
@@ -332,15 +400,18 @@ export default function ModalVariantes({
         <Input
           size="small"
           value={formsVariante[record.id]?.barcode ?? ""}
-          onChange={e => updateFormVariante(record.id, "barcode", e.target.value)}
+          onChange={e => setFormsVariante(prev => ({
+            ...prev,
+            [record.id]: { ...prev[record.id], barcode: e.target.value },
+          }))}
           placeholder="Código de barras"
         />
       ),
     },
     {
-      title:  "Preço (R$)",
+      title:  "Preço",
       key:    "preco",
-      width:  130,
+      width:  120,
       render: (_: unknown, record: Variante) => (
         <InputNumber
           size="small"
@@ -348,198 +419,258 @@ export default function ModalVariantes({
           min={0}
           precision={2}
           decimalSeparator=","
-          value={formsVariante[record.id]?.list_price
-            ? parseFloat(formsVariante[record.id].list_price)
-            : undefined}
+          prefix="R$"
           placeholder={precoBase.toFixed(2)}
-          onChange={v => updateFormVariante(record.id, "list_price", v != null ? String(v) : "")}
+          value={formsVariante[record.id]?.list_price ? parseFloat(formsVariante[record.id].list_price) : undefined}
+          onChange={v => setFormsVariante(prev => ({
+            ...prev,
+            [record.id]: { ...prev[record.id], list_price: v != null ? String(v) : "" },
+          }))}
         />
       ),
     },
     {
-      title:     "Estoque",
+      title:  "Estoque",
       dataIndex: "qty_available",
-      width:     90,
-      align:     "center",
-      render:    (v: number) => (
+      width:  80,
+      align:  "center",
+      render: (v: number) => (
         <Tag color={v > 0 ? "success" : "error"}>{v} un</Tag>
       ),
     },
     {
       title:  "",
       key:    "salvar",
-      width:  60,
-      align:  "center",
+      width:  80,
       render: (_: unknown, record: Variante) => (
         <Button
-          type="primary"
           size="small"
+          type="primary"
           icon={<SaveOutlined />}
           loading={salvando === record.id}
           onClick={() => salvarVariante(record.id)}
-        />
+        >
+          Salvar
+        </Button>
       ),
     },
   ];
 
-  // ── JSX ──────────────────────────────────────────────────────────────────
+  // ── JSX ───────────────────────────────────────────────────────────────────
   return (
     <Modal
+      title={
+        <Space>
+          <AppstoreOutlined />
+          <span>Variantes — {templateNome}</span>
+        </Space>
+      }
       open
       centered
-      width="min(95vw, 860px)"
+      maskClosable={false}
       onCancel={onFechar}
-      keyboard
       footer={null}
-      title={
-        <div>
-          <Title level={4} style={{ margin: 0 }}>{templateNome}</Title>
-          <Text type="secondary" style={{ fontSize: 13 }}>Gestão de Variantes</Text>
-        </div>
-      }
+      width="min(95vw, 860px)"
     >
       {carregando ? (
-        <div style={{ textAlign: "center", padding: "48px 0" }}>
+        <div style={{ display: "flex", justifyContent: "center", padding: "40px 0" }}>
           <Spin size="large" tip="Carregando..." />
         </div>
       ) : (
-        <Tabs
-          activeKey={aba}
-          onChange={setAba}
-          items={[
-            // ── ABA ATRIBUTOS ──────────────────────────────────────────────
-            {
-              key:   "atributos",
-              label: (
+        <>
+          {/* ── NCM do Template (campo compartilhado por todas as variantes) ── */}
+          <div style={{
+            padding:      "12px 16px",
+            background:   ncmTemplate ? "#F0FDF4" : "#FFF8E7",
+            borderRadius: 8,
+            border:       `1px solid ${ncmTemplate ? "#86EFAC" : C.amber}`,
+            marginBottom: 16,
+          }}>
+            <Row align="middle" gutter={12}>
+              <Col flex="auto">
                 <Space>
-                  <TagsOutlined />
-                  Atributos
-                  {linhasAtributo.length > 0 && (
-                    <Badge count={linhasAtributo.length} color="#F59E0B" />
-                  )}
+                  <TagOutlined style={{ color: ncmTemplate ? C.success : C.amber }} />
+                  <Text style={{ fontWeight: 600, fontSize: 13 }}>NCM do produto</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    (compartilhado por todas as variantes)
+                  </Text>
                 </Space>
-              ),
-              children: (
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <Row justify="space-between" align="middle">
-                    <Col>
-                      <Text type="secondary">
-                        Defina os atributos do produto (ex: Tamanho, Cor).
-                        Após definir, as variantes aparecem na aba Variantes.
-                      </Text>
-                    </Col>
-                    <Col>
+                {ncmEditando ? (
+                  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+                    <Input
+                      autoFocus
+                      size="small"
+                      value={ncmInput}
+                      onChange={e => setNcmInput(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                      placeholder="00000000"
+                      maxLength={8}
+                      style={{ fontFamily: "monospace", width: 120, letterSpacing: 3 }}
+                      status={ncmInput.length > 0 && ncmInput.length < 8 ? "error" : undefined}
+                      onKeyDown={e => { if (e.key === "Enter") salvarNcm(); if (e.key === "Escape") { setNcmEditando(false); setNcmInput(ncmTemplate); } }}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>{ncmInput.length}/8</Text>
+                    <Button
+                      size="small"
+                      type="primary"
+                      loading={salvandoNcm}
+                      disabled={ncmInput.length > 0 && ncmInput.length !== 8}
+                      onClick={salvarNcm}
+                      style={{ background: C.success, borderColor: C.success }}
+                    >
+                      Salvar
+                    </Button>
+                    <Button
+                      size="small"
+                      onClick={() => { setNcmEditando(false); setNcmInput(ncmTemplate); }}
+                    >
+                      Cancelar
+                    </Button>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 4 }}>
+                    {ncmTemplate
+                      ? <Text code style={{ fontSize: 13 }}>{ncmTemplate}</Text>
+                      : <Text type="secondary" style={{ fontSize: 12 }}>Sem NCM cadastrado</Text>}
+                  </div>
+                )}
+              </Col>
+              {!ncmEditando && (
+                <Col>
+                  <Button
+                    size="small"
+                    icon={<TagOutlined />}
+                    onClick={() => { setNcmEditando(true); setNcmInput(ncmTemplate); }}
+                  >
+                    {ncmTemplate ? "Editar NCM" : "Cadastrar NCM"}
+                  </Button>
+                </Col>
+              )}
+            </Row>
+          </div>
+
+          <Tabs
+            activeKey={aba}
+            onChange={setAba}
+            items={[
+              {
+                key:   "atributos",
+                label: (
+                  <Space>
+                    <TagsOutlined />
+                    Atributos
+                    {linhasAtributo.length > 0 && (
+                      <Tag style={{ marginLeft: 2 }}>{linhasAtributo.length}</Tag>
+                    )}
+                  </Space>
+                ),
+                children: (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    <Row justify="end">
                       <Button
                         type="primary"
                         icon={<PlusOutlined />}
                         onClick={() => setModalAttr(true)}
+                        disabled={atributosDisponiveis.length === 0}
                       >
                         Adicionar Atributo
                       </Button>
-                    </Col>
-                  </Row>
+                    </Row>
 
-                  {linhasAtributo.length === 0 ? (
-                    <div style={{ textAlign: "center", padding: "32px 0", color: "#94A3B8" }}>
-                      <TagsOutlined style={{ fontSize: 32, marginBottom: 8, display: "block" }} />
-                      <Text type="secondary">Nenhum atributo cadastrado.</Text><br />
-                      <Text type="secondary">Adicione atributos para criar variantes.</Text>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {linhasAtributo.map(linha => {
-                        const tavsDoAttr = tavsPorAtributo[linha.attribute_id[0]] ?? [];
-                        return (
-                          <div
-                            key={linha.id}
-                            style={{
-                              display: "flex", alignItems: "center", justifyContent: "space-between",
-                              padding: "14px 16px", background: "#F8FAFC",
-                              borderRadius: 8, border: "1px solid #E2E8F0",
-                            }}
-                          >
-                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                              <Text strong>{linha.attribute_id[1]}</Text>
-                              <Space size={6} wrap>
+                    {linhasAtributo.length === 0 ? (
+                      <div style={{ textAlign: "center", padding: "32px 0" }}>
+                        <TagsOutlined style={{ fontSize: 32, marginBottom: 8, display: "block", color: "#94A3B8" }} />
+                        <Text type="secondary">Nenhum atributo cadastrado.</Text>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {linhasAtributo.map(linha => {
+                          const tavsDoAttr = tavsPorAtributo[linha.attribute_id[0]] ?? [];
+                          return (
+                            <div key={linha.id} style={{
+                              padding: "12px 16px", background: C.bgRow,
+                              borderRadius: 8, border: `1px solid ${C.border}`,
+                            }}>
+                              <Row justify="space-between" align="middle">
+                                <Text strong>{linha.attribute_id[1]}</Text>
+                                <Button
+                                  size="small"
+                                  danger
+                                  icon={<DeleteOutlined />}
+                                  onClick={() => handleRemoverAtributo(linha.id, linha.attribute_id[1])}
+                                >
+                                  Remover
+                                </Button>
+                              </Row>
+                              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
                                 {tavsDoAttr.map(tav => (
-                                  <Tag key={tav.id} color="amber" style={{ background: "#FFF8E7", color: "#D97706", border: "1px solid #FDE68A" }}>
+                                  <Tag key={tav.id} color={tav.ptav_active ? "blue" : "default"}>
                                     {tav.product_attribute_value_id[1]}
                                   </Tag>
                                 ))}
-                              </Space>
+                              </div>
                             </div>
-                            <Button
-                              type="text"
-                              danger
-                              icon={<DeleteOutlined />}
-                              onClick={() => handleRemoverAtributo(linha.id, linha.attribute_id[1])}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ),
-            },
-
-            // ── ABA VARIANTES ──────────────────────────────────────────────
-            {
-              key:   "variantes",
-              label: (
-                <Space>
-                  <AppstoreOutlined />
-                  Variantes
-                  {variantes.length > 0 && (
-                    <Badge count={variantes.length} color="#F59E0B" />
-                  )}
-                </Space>
-              ),
-              children: (
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <Row justify="space-between" align="middle">
-                    <Col>
-                      <Text type="secondary">
-                        Configure SKU, barcode e preço. Preço em branco herda R$ {precoBase.toFixed(2)}.
-                      </Text>
-                    </Col>
-                    {linhasAtributo.length > 0 && (
-                      <Col>
-                        <Button
-                          type="primary"
-                          icon={<PlusOutlined />}
-                          onClick={() => setModalVariante(true)}
-                        >
-                          Configurar Variante
-                        </Button>
-                      </Col>
+                          );
+                        })}
+                      </div>
                     )}
-                  </Row>
+                  </div>
+                ),
+              },
+              {
+                key:   "variantes",
+                label: (
+                  <Space>
+                    <AppstoreOutlined />
+                    Variantes
+                    {variantes.length > 0 && (
+                      <Tag style={{ marginLeft: 2 }}>{variantes.length}</Tag>
+                    )}
+                  </Space>
+                ),
+                children: (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    <Row justify="end">
+                      {linhasAtributo.length > 0 && (
+                        <Col>
+                          <Button
+                            icon={<PlusOutlined />}
+                            onClick={() => {
+                              setTavsSelecionados({});
+                              setFormNovaVariante({ default_code: "", barcode: "", list_price: "" });
+                              setModalVariante(true);
+                            }}
+                          >
+                            Configurar Variante
+                          </Button>
+                        </Col>
+                      )}
+                    </Row>
 
-                  {variantes.length === 0 ? (
-                    <div style={{ textAlign: "center", padding: "32px 0" }}>
-                      <AppstoreOutlined style={{ fontSize: 32, marginBottom: 8, display: "block", color: "#94A3B8" }} />
-                      <Text type="secondary">
-                        {linhasAtributo.length === 0
-                          ? "Adicione atributos primeiro na aba Atributos."
-                          : 'Clique em "Configurar Variante" para definir SKU e barcode.'}
-                      </Text>
-                    </div>
-                  ) : (
-                    <Table<Variante>
-                      rowKey="id"
-                      size="small"
-                      columns={colunasVariantes}
-                      dataSource={variantes}
-                      pagination={false}
-                      scroll={{ y: 340 }}
-                    />
-                  )}
-                </div>
-              ),
-            },
-          ]}
-        />
+                    {variantes.length === 0 ? (
+                      <div style={{ textAlign: "center", padding: "32px 0" }}>
+                        <AppstoreOutlined style={{ fontSize: 32, marginBottom: 8, display: "block", color: "#94A3B8" }} />
+                        <Text type="secondary">
+                          {linhasAtributo.length === 0
+                            ? "Adicione atributos primeiro na aba Atributos."
+                            : 'Clique em "Configurar Variante" para definir SKU e barcode.'}
+                        </Text>
+                      </div>
+                    ) : (
+                      <Table<Variante>
+                        rowKey="id"
+                        size="small"
+                        columns={colunasVariantes}
+                        dataSource={variantes}
+                        pagination={false}
+                        scroll={{ y: 340 }}
+                      />
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+          />
+        </>
       )}
 
       {/* ── Modal Adicionar Atributo ── */}
@@ -570,10 +701,7 @@ export default function ModalVariantes({
             <Select
               value={attrSelecionado === 0 ? undefined : attrSelecionado}
               placeholder="— Selecione —"
-              onChange={val => {
-                setAttrSelecionado(val);
-                setValoresSelecionados([]);
-              }}
+              onChange={val => { setAttrSelecionado(val); setValoresSelecionados([]); }}
               options={[
                 ...atributosDisponiveis.map(a => ({ value: a.id, label: a.name })),
                 { value: "novo", label: "+ Criar novo atributo" },
@@ -602,17 +730,13 @@ export default function ModalVariantes({
                       key={v.id}
                       checked={valoresSelecionados.includes(v.id)}
                       onChange={e => {
-                        if (e.target.checked) {
-                          setValoresSelecionados(prev => [...prev, v.id]);
-                        } else {
-                          setValoresSelecionados(prev => prev.filter(id => id !== v.id));
-                        }
+                        if (e.target.checked) setValoresSelecionados(prev => [...prev, v.id]);
+                        else setValoresSelecionados(prev => prev.filter(id => id !== v.id));
                       }}
                     >
                       {v.name}
                     </Checkbox>
-                  ))
-                }
+                  ))}
               </div>
             </Form.Item>
           )}
@@ -651,7 +775,6 @@ export default function ModalVariantes({
               </Button>
             </div>
           </Form.Item>
-
         </div>
       </Modal>
 
@@ -663,15 +786,8 @@ export default function ModalVariantes({
         maskClosable
         onCancel={() => setModalVariante(false)}
         footer={[
-          <Button key="cancelar" onClick={() => setModalVariante(false)}>
-            Cancelar
-          </Button>,
-          <Button
-            key="salvar"
-            type="primary"
-            loading={adicionandoVariante}
-            onClick={confirmarAdicionarVariante}
-          >
+          <Button key="cancelar" onClick={() => setModalVariante(false)}>Cancelar</Button>,
+          <Button key="salvar" type="primary" loading={adicionandoVariante} onClick={confirmarAdicionarVariante}>
             Salvar Variante
           </Button>,
         ]}
@@ -684,10 +800,7 @@ export default function ModalVariantes({
               <Form.Item key={linha.id} label={linha.attribute_id[1]} style={{ marginBottom: 0 }}>
                 <Radio.Group
                   value={tavsSelecionados[linha.attribute_id[0]]}
-                  onChange={e => setTavsSelecionados(prev => ({
-                    ...prev,
-                    [linha.attribute_id[0]]: e.target.value,
-                  }))}
+                  onChange={e => setTavsSelecionados(prev => ({ ...prev, [linha.attribute_id[0]]: e.target.value }))}
                 >
                   <Space wrap>
                     {tavsDoAttr.map(tav => (
@@ -724,10 +837,7 @@ export default function ModalVariantes({
             </Col>
           </Row>
 
-          <Form.Item
-            label={`Preço (vazio = R$ ${precoBase.toFixed(2)})`}
-            style={{ marginBottom: 0 }}
-          >
+          <Form.Item label={`Preço (vazio = R$ ${precoBase.toFixed(2)})`} style={{ marginBottom: 0 }}>
             <InputNumber
               style={{ width: "100%" }}
               min={0}
